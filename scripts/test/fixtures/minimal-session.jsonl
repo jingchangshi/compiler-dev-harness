@@ -1,0 +1,4 @@
+{"type":"session","version":0,"id":"session-test-min","createdAt":1730000000000,"cwd":"/repo","delegationDepth":0}
+{"type":"assistant/message","seq":1,"time":1730000000001,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[],"source":{"kind":"model"}}}}
+not json at all
+{"type":"mystery-future-event","seq":2,"time":1730000000002,"data":{"whatever":true}}
