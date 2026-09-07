@@ -6,6 +6,18 @@
  * facts only; build/environment procedures stay human-owned (Repository
  * Contract) and are never inferred here.
  *
+ * v1.3 (Phase R1, generic-context backend): the source-retrieval half of the
+ * driver becomes a provider seam with an explicit backend policy
+ * (`auto`/`ripwire`/`legacy`, input → COMPILER_INSPECT_BACKEND env → auto):
+ * - `ripwire` — the new primary provider (`compiler-context-backend.mjs`)
+ *   serves one bounded `--pack-task --json` bundle as `source_context`;
+ * - `legacy-rg` — the original hand-written rg/git retrieval below, retained
+ *   unchanged and still the fallback;
+ * - every result discloses `backend`/`fallback`/`fallback_reason` (finite
+ *   reason vocabulary; no silent fallback), git state/diff/history and MLIR
+ *   log forensics stay provider-independent, and one non-sensitive context
+ *   observation line is emitted per source-retrieval attempt.
+ *
  * v1.2 retrieval improvements over v1.1 (from the 2026-09-06 case feedback):
  * - definition retrieval adds the C/C++ function-definition shape
  *   `name(args) {` (with an optional preceding return-type token run), which
@@ -39,8 +51,19 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve, relative, isAbsolute, dirname } from 'node:path'
+import {
+  BACKEND_LEGACY,
+  BACKEND_RIPWIRE,
+  FALLBACK_REASONS,
+  RipwireContextError,
+  contextObservationRecord,
+  logContextRecord,
+  outsideCorpusFiles,
+  resolveBackendPolicy,
+  runRipwireContext,
+} from './compiler-context-backend.mjs'
 
-const VERSION = '1.2'
+const VERSION = '1.3'
 const MAX_ITEMS = 12
 const MAX_LINE_CHARS = 280
 const MAX_DEFINITION_ITEMS = 10
@@ -67,7 +90,7 @@ const DEFAULT_EXCLUDED_DIRS = [
 ]
 
 function trim(value) {
-  return value.trim()
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function unique(items) {
@@ -442,8 +465,10 @@ function enforceBudget(sections) {
   return { text: render(), truncated }
 }
 
-export async function inspectCompilerRepository(input, signal) {
+export async function inspectCompilerRepository(input, signal, context = {}) {
+  const env = context.env ?? process.env
   signal?.throwIfAborted()
+  const startedAt = Date.now()
   let root = resolve(input.repo_root ?? process.cwd())
   if (!existsSync(root)) throw new Error(`repo_root does not exist: ${root}`)
   if (!existsSync(resolve(root, '.git'))) {
@@ -468,6 +493,91 @@ export async function inspectCompilerRepository(input, signal) {
     unresolved.push('Not a Git worktree: Git state and history are unavailable.')
   }
 
+  // ── Backend policy (v1.3): CodeContextProvider selection ─────────────────
+  // `auto` prefers the Ripwire provider and falls back to the retained legacy
+  // rg/git path on ANY failure (finite reason, never silent); `ripwire` is
+  // explicit and degrades loudly instead of pretending legacy ran; `legacy`
+  // forces the rg/git path (regression + A/B). Only the GENERIC source
+  // retrieval swaps — git state/diff/history and log forensics run regardless.
+  const policy = resolveBackendPolicy(input, env)
+  unresolved.push(...policy.notes)
+  const task = trim(input.task)
+  const sourceRetrievalRequested = symbols.length > 0 || exactFilesRequested(input) > 0 || task !== ''
+
+  let backend = BACKEND_LEGACY
+  let fallback = false
+  let fallbackReason = null
+  let sourceContext = null
+  let sourceDisclosures = null
+  let ripwireAttempt // observation-plane facts about the ripwire attempt, if one ran
+  // Anchored files that can never be in Ripwire's indexed corpus (crawl-pruned
+  // or contract-excluded trees) — reported whenever a Ripwire attempt ran,
+  // regardless of whether it succeeded, fell back, or degraded (goal §13).
+  const outsideCorpus = (input.files ?? []).length > 0
+    ? outsideCorpusFiles(root, files, input.exclude_dirs ?? [])
+    : []
+
+  if (policy.policy !== 'legacy' && sourceRetrievalRequested) {
+    try {
+      const result = await runRipwireContext({ ...input, task: task || undefined }, signal, { excludeDirs: input.exclude_dirs, env })
+      if (!includeTests && result.sourceContext.tests_to_run.length > 0) {
+        result.sourceContext.tests_to_run = []
+        result.disclosures.bounding_notes = [...(result.disclosures.bounding_notes ?? []), 'tests_to_run dropped (include_tests=false)']
+        result.disclosures.truncated = true
+      }
+      ripwireAttempt = {
+        duration_ms: result.meta.duration_ms,
+        result_chars: result.meta.result_chars,
+        weak: result.disclosures.weak,
+        failed: false,
+      }
+      if (result.disclosures.weak && policy.policy === 'auto') {
+        // Weak = nothing retrieved. In auto that is a controlled fallback, and
+        // "not retrieved" must never read as semantic absence.
+        fallback = true
+        fallbackReason = FALLBACK_REASONS.WEAK_RESULT
+        unresolved.push(`Ripwire pack-task retrieved nothing for the anchors (${result.meta.duration_ms} ms); legacy retrieval ran instead — not retrieved is not semantic absence.`)
+      } else {
+        backend = BACKEND_RIPWIRE
+        sourceContext = result.sourceContext
+        sourceDisclosures = result.disclosures
+        const disclosures = result.disclosures
+        if (disclosures.ambiguous > 0) {
+          unresolved.push(`Ripwire ranking holds ${disclosures.ambiguous} name(s) defined in several files; disambiguate by path before relying on a body.`)
+        }
+        if (disclosures.truncated) {
+          unresolved.push('Ripwire bundle was truncated (budget); counts are floors — request narrower anchors or raise nothing blindly.')
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof RipwireContextError)) throw error
+      ripwireAttempt = { failed: true, reason: error.reason, duration_ms: Date.now() - startedAt }
+      if (policy.policy === 'auto') {
+        fallback = true
+        fallbackReason = error.reason
+        unresolved.push(`Ripwire unavailable (${error.reason}); legacy rg/git retrieval ran instead.`)
+      } else {
+        // Explicit `ripwire` must NOT silently become legacy (goal §7): keep
+        // the backend honest and surface the degraded condition.
+        backend = BACKEND_RIPWIRE
+        sourceContext = {
+          provider: BACKEND_RIPWIRE,
+          mode: 'pack-task',
+          degraded: true,
+          error: error.reason,
+          message: error.message.length > 200 ? `${error.message.slice(0, 199)}…` : error.message,
+          ranked_symbols: [],
+          bodies: [],
+          callers: [],
+          tests_to_run: [],
+          far: [],
+          notes: [],
+        }
+        unresolved.push(`Ripwire was requested explicitly but failed (${error.reason}); no legacy fallback ran. Re-call with backend 'legacy' for rg/git retrieval.`)
+      }
+    }
+  }
+
   signal?.throwIfAborted()
   const branch = await git(['branch', '--show-current'], root, signal)
   if (branch.code === 0) repository.branch = trim(branch.stdout) || 'detached'
@@ -479,15 +589,37 @@ export async function inspectCompilerRepository(input, signal) {
     if (existsSync(resolve(root, file))) exactFiles.push(file)
     else unresolved.push(`Requested file not found: ${file}`)
   }
-
-  signal?.throwIfAborted()
   const anchorInVendored = exactFiles.some(file => VENDOR_DIRS.some(dir => file === dir || file.startsWith(`${dir}/`)))
-  const definitions = await collectDefinitions(root, symbols, excludedDirs, exactFiles, signal)
-  const references = await collectReferences(root, symbols, excludedDirs, signal)
-  const vendoredResult = await collectVendoredFallback(root, symbols, excludedDirs, definitions.length + references.length, signal, { anchorInVendored, definitionsEmpty: symbols.length > 0 && definitions.length === 0 })
-  const vendored = vendoredResult.items
-  signal?.throwIfAborted()
-  const tests = includeTests ? await collectTestMatches(root, symbols, contractTestDirs, excludedDirs, signal) : []
+  if (ripwireAttempt !== undefined && outsideCorpus.length > 0) {
+    unresolved.push(`Anchored files outside Ripwire's indexed corpus (crawl-pruned or contract-excluded trees): ${outsideCorpus.join(', ')} — absence there is not-retrieved, not evidence of absence.`)
+  }
+
+  // Legacy rg/git source retrieval — the retained fallback and the explicit
+  // `legacy` backend. When Ripwire serves, only the NARROW vendored supplement
+  // may still run (an anchored file in a tree Ripwire prunes is invisible to
+  // its corpus; the legacy vendored pass is the bounded remedy, goal §13).
+  let definitions = []
+  let references = []
+  let vendored = []
+  let vendoredResult = { items: [], reason: null }
+  let tests = []
+  if (backend !== BACKEND_RIPWIRE) {
+    signal?.throwIfAborted()
+    definitions = await collectDefinitions(root, symbols, excludedDirs, exactFiles, signal)
+    references = await collectReferences(root, symbols, excludedDirs, signal)
+    vendoredResult = await collectVendoredFallback(root, symbols, excludedDirs, definitions.length + references.length, signal, { anchorInVendored, definitionsEmpty: symbols.length > 0 && definitions.length === 0 })
+    vendored = vendoredResult.items
+    signal?.throwIfAborted()
+    tests = includeTests ? await collectTestMatches(root, symbols, contractTestDirs, excludedDirs, signal) : []
+  } else if (outsideCorpus.some(file => VENDOR_DIRS.some(dir => file === dir || file.startsWith(`${dir}/`)))) {
+    signal?.throwIfAborted()
+    vendoredResult = await collectVendoredFallback(root, symbols, excludedDirs, 0, signal, { anchorInVendored: true })
+    vendored = vendoredResult.items
+    if (vendored.length > 0) {
+      unresolved.push('Narrow legacy vendored pass ran for anchored files Ripwire cannot index; matches come from vendored/submodule trees.')
+    }
+  }
+
   const changes = []
   if (includeDiff) {
     const diff = await git(['diff', '--stat', '--', ...(exactFiles.length > 0 ? exactFiles : ['.'])], root, signal)
@@ -495,11 +627,11 @@ export async function inspectCompilerRepository(input, signal) {
   }
   const historyItems = await history(root, exactFiles, symbols, historyWindow, signal)
 
-  if (symbols.length === 0 && files.length === 0) unresolved.push('No explicit anchors supplied; inspect a task anchor before broadening discovery.')
-  if (symbols.length > 0 && definitions.length === 0 && references.length === 0 && vendored.length === 0) {
+  if (symbols.length === 0 && files.length === 0 && task === '') unresolved.push('No explicit anchors supplied; inspect a task anchor before broadening discovery.')
+  if (backend !== BACKEND_RIPWIRE && symbols.length > 0 && definitions.length === 0 && references.length === 0 && vendored.length === 0) {
     unresolved.push('No match for the symbols outside vendored trees; inspect spelling, generated sources, or an implementation-specific name.')
   }
-  if (vendored.length > 0) {
+  if (backend !== BACKEND_RIPWIRE && vendored.length > 0) {
     const reasonNote = vendoredResult.reason === 'definitions-only-in-vendored'
       ? 'no definition-shaped match outside vendored trees'
       : vendoredResult.reason === 'anchor-inside-vendored'
@@ -519,10 +651,20 @@ export async function inspectCompilerRepository(input, signal) {
     ['Logs', logs.slice_items],
     ['Unresolved', limitedLines(unresolved, 8)],
   ]
-  const { truncated } = enforceBudget(sections)
-  return {
+  const { text: rendered, truncated } = enforceBudget(sections)
+  // Schema-strict output: keys must be present-and-typed or absent, never
+  // present-with-undefined (the harness validates the object, not its JSON
+  // spelling). Rows are already compact; the two top-level Ripwire objects get
+  // a shallow strip here.
+  const stripUndefined = (value) => (value === null || value === undefined ? value : Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)))
+  const bundle = {
     repository,
     anchors: { files: exactFiles, symbols },
+    backend,
+    fallback,
+    fallback_reason: fallbackReason,
+    source_context: stripUndefined(sourceContext),
+    source_disclosures: stripUndefined(sourceDisclosures),
     definitions,
     references,
     vendored_matches: vendored,
@@ -539,6 +681,41 @@ export async function inspectCompilerRepository(input, signal) {
       version: VERSION,
     },
   }
+
+  // ── Observation plane (goal §16): one non-sensitive line per source-      ──
+  // ── retrieval attempt. Counts/categories only — never task prose, paths,  ──
+  // ── source bodies, raw Ripwire output, or stderr.                         ──
+  if (sourceRetrievalRequested) {
+    const rankedCount = sourceContext?.ranked_symbols?.length
+    logContextRecord(contextObservationRecord({
+      correlationId: context.correlationId,
+      policy: policy.policy,
+      backend,
+      fallback,
+      fallbackReason,
+      durationMs: Date.now() - startedAt,
+      resultChars: backend === BACKEND_RIPWIRE
+        ? (sourceContext?.degraded === true ? 0 : (ripwireAttempt?.result_chars ?? 0))
+        : rendered.length,
+      truncated: truncated === true || sourceDisclosures?.truncated === true,
+      weak: backend === BACKEND_RIPWIRE
+        ? (sourceContext?.degraded === true ? true : ripwireAttempt?.weak)
+        : (definitions.length + references.length + vendored.length + tests.length) === 0,
+      repoRoot: root,
+      fileCount: exactFiles.length,
+      symbolCount: symbols.length,
+      rankedCount,
+      bodyCount: sourceContext?.bodies?.length,
+      testCount: sourceContext?.tests_to_run?.length,
+      outsideCorpusCount: outsideCorpus.length,
+    }), context.logDir)
+  }
+  return bundle
+}
+
+/** Count requested file anchors before existence filtering (pre-resolution). */
+function exactFilesRequested(input) {
+  return Array.isArray(input.files) ? input.files.filter(file => typeof file === 'string' && file.trim() !== '').length : 0
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

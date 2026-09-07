@@ -14,6 +14,12 @@
  * correlate them by that id. Routing stays conservative: the goal is correct
  * routing, not a higher call rate.
  *
+ * v3 (Phase R1): the minted correlation id is ALSO published to the shared
+ * per-agent observation state (compiler-observation-state.mjs) so the
+ * `compiler_inspect` context observation stream can stamp the same id without
+ * a cross-plugin service. No semantic coupling: nothing about knowledge
+ * queries, graphs, or findings crosses this boundary — only the opaque id.
+ *
  * State is keyed per agent (Session) because the preset is mounted once under
  * a standing scope and every joined session shares this module instance.
  *
@@ -77,6 +83,7 @@ exports.apply = function apply(ctx) {
   // after a rebase takes ~100s on AscendNPU-IR. The `?v=` query busts the host
   // process's ESM module cache when the driver is edited in place.
   const driverPromise = import(new URL('./compiler-knowledge-driver.mjs?v=2.0', `file://${__filename}`).href)
+  const statePromise = import(new URL('./compiler-observation-state.mjs', `file://${__filename}`).href)
 
   ctx.tools.register({
     name: 'compiler_route',
@@ -95,27 +102,31 @@ exports.apply = function apply(ctx) {
       logged: { type: 'boolean' },
     } }, render: renderJson },
     async execute(args, exec) {
-      const driver = await driverPromise
-      const state = stateFor(exec?.agent?.id)
-      state.correlationId = driver.newCorrelationId()
-      state.route = {
+      const [driver, state] = await Promise.all([driverPromise, statePromise])
+      const agentKey = exec?.agent?.id
+      const state0 = stateFor(agentKey)
+      state0.correlationId = driver.newCorrelationId()
+      state0.route = {
         kind: args.route,
         knowledgeExpected: args.knowledge_expected === true,
         confidence: args.confidence,
         reason: args.reason,
         target: typeof args.target === 'string' && args.target.trim() !== '' ? args.target.trim().slice(0, 120) : undefined,
       }
+      // Publish the id to the shared observation state so the compiler_inspect
+      // context stream can correlate with this task (opaque id only).
+      state.setAgentCorrelationId(agentKey, state0.correlationId)
       const record = {
         ts: new Date().toISOString(),
-        correlation_id: state.correlationId,
-        route: state.route.kind,
-        knowledge_expected: state.route.knowledgeExpected,
-        confidence: state.route.confidence,
-        reason: state.route.reason,
+        correlation_id: state0.correlationId,
+        route: state0.route.kind,
+        knowledge_expected: state0.route.knowledgeExpected,
+        confidence: state0.route.confidence,
+        reason: state0.route.reason,
       }
-      if (state.route.target !== undefined) record.target = state.route.target
+      if (state0.route.target !== undefined) record.target = state0.route.target
       const logged = driver.logRouteRecord(record, logDirs()?.routes)
-      return { correlation_id: state.correlationId, route: state.route.kind, knowledge_expected: state.route.knowledgeExpected, logged }
+      return { correlation_id: state0.correlationId, route: state0.route.kind, knowledge_expected: state0.route.knowledgeExpected, logged }
     },
   })
 
@@ -139,13 +150,17 @@ exports.apply = function apply(ctx) {
       delivery: { type: 'object', description: 'Driver version, correlation id, refresh report, truncation notes.' },
     } }, render: renderJson },
     async execute(args, exec) {
-      const driver = await driverPromise
-      const state = stateFor(exec?.agent?.id)
-      if (state.correlationId === undefined) state.correlationId = driver.newCorrelationId()
+      const [driver, state] = await Promise.all([driverPromise, statePromise])
+      const agentKey = exec?.agent?.id
+      const state2 = stateFor(agentKey)
+      if (state2.correlationId === undefined) {
+        state2.correlationId = driver.newCorrelationId()
+        state.setAgentCorrelationId(agentKey, state2.correlationId)
+      }
       const context = {
-        correlationId: state.correlationId,
-        route: state.route?.kind,
-        knowledgeExpected: state.route?.knowledgeExpected,
+        correlationId: state2.correlationId,
+        route: state2.route?.kind,
+        knowledgeExpected: state2.route?.knowledgeExpected,
       }
       const guard = new AbortController()
       const timeout = setTimeout(() => guard.abort(new Error('compiler_knowledge timed out after 240000 ms')), 240000)

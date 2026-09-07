@@ -23,9 +23,11 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 |---|---|
 | `preset.yml` | preset 元数据(name/description) |
 | `agent.cordis.yml` | **agent-plane 组成**:挂载哪些插件/工具/提示段(第 2 章) |
-| `compiler-inspect-v3-3.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章;v3-3 = output schema 改用当前 harness 支持的 oneOf nullable 形式) |
-| `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章) |
-| `compiler-knowledge-v2.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章) |
+| `compiler-inspect-v3-4.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章;v3-3 = output schema 改用当前 harness 支持的 oneOf nullable 形式;v3-4 = Phase R1 backend policy) |
+| `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章;v1.3 起含 CodeContextProvider 接缝) |
+| `compiler-context-backend.mjs` | Ripwire 通用上下文后端(第 14 章) |
+| `compiler-observation-state.mjs` | per-agent correlation id 共享注册表(第 14.5 节) |
+| `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
 | `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
 | `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的仓库契约模板(第 6 章) |
@@ -521,17 +523,114 @@ case 来源。
 
 ---
 
+## 14. Phase R1:Ripwire 通用代码上下文后端(2026-09-07 已实现)
+
+> 目标:`compiler_inspect` 获得一个 **CodeContextProvider 接缝**,以 Ripwire
+> (`redhat-et/ripwire`,zero-dependency C++23 CLI)为首选通用源码上下文提供者,保留原 rg/git 检索为
+> legacy/回退,且不改动 mlir-compiler-harness、不新增第四个模型侧工具、不打破既有输出契约。
+> 集成面刻意只取一个能力:`--pack-task --json`。
+
+### 14.1 数据流
+
+```text
+compiler_inspect(input, backend?)
+        |
+        +-- backend policy: auto | ripwire | legacy      ← input > COMPILER_INSPECT_BACKEND > auto
+        |
+        +-- CodeContextProvider(仅通用源码检索交换)
+        |       +-- ripwire   → compiler-context-backend.mjs
+        |       |                 RIPWIRE_BIN → PATH;spawn 参数数组;--pack-task --json
+        |       |                 --token-budget=5084(由 CompilerDev 预算推导,见 14.3)
+        |       |                 --exclude=<dir>/(契约 exclude_dirs 逐个映射)
+        |       |                 → normalizePackTaskResult → source_context + source_disclosures
+        |       +-- legacy-rg → 原 collectDefinitions/References/Vendored/Tests(原样保留)
+        |
+        +-- CompilerArtifactProvider(与后端无关,always 运行)
+        |       git 状态/diff/history + MLIR 日志取证(log_files)
+        |
+        +-- 观测:analysis/feedback/context/<date>.jsonl(每次源码检索尝试一行,去敏)
+```
+
+`auto`:Ripwire 可用即用;不可用/失败/弱结果 → 受控 legacy 回退,`fallback_reason` 取有限枚举
+(`ripwire-not-found` / `ripwire-invocation-failed` / `ripwire-invalid-output` / `ripwire-timeout` /
+`ripwire-weak-result` / `backend-policy-legacy`)。`ripwire`:显式请求,失败返回 degraded 结果
+(`source_context.degraded=true, error=<reason>`),**绝不静默换 legacy**。`legacy`:强制 rg/git(A/B 与回归)。
+
+### 14.2 契约演进(向后兼容)
+
+- 输入新增可选:`backend`(enum auto/ripwire/legacy)、`task`(检索任务短语,可选,不入观测流)。
+- 输出新增必填:`backend`(ripwire|legacy-rg)、`fallback`、`fallback_reason`、`source_context`(nullable)、
+  `source_disclosures`(nullable;weak/ambiguous/truncated/counts_floor/各节 kept/total/budget 事实)。
+- 既有字段全部保留且仍必填;legacy 路径下 `source_context=null`,行为与 v1.2 一致(VERSION 1.2→1.3)。
+- 渲染:新增 `Context backend: <backend> (fallback: <reason|none>) | weak= … ambiguous= … truncated= …
+  counts_floor= …` 一行(离线分析器按此聚合)与 Source context 节(标题明示
+  "generic retrieval/ranking evidence — NOT an mlir-repomap semantic fact")。
+
+### 14.3 预算映射(单一总预算,不叠天花板)
+
+`MAX_TOTAL_CHARS=20000` 不变;通用上下文切片 12000 字符;Ripwire token 目标按其计价下限 ~2.36 B/token
+推导:`--token-budget=5084` ⇒ 原始 JSON 天花板 ~11.8 KB,天然落在切片内;normalizer 再裁剪并披露每一次裁剪
+(`bounding_notes`)。 Ripwire 自身的截断标记(ranking_capped / kept<total / bodies_omitted /
+over_ceiling)原样映射进 `source_disclosures.truncated/counts_floor`,绝不吞掉。
+
+### 14.4 AscendNPU-IR 语料边界(实测,2026-09-07)
+
+- Ripwire 抓取自带内置目录黑名单(kCrawlSkipDirs:`third_party`/`build`/`out`/`target`/…,下划线拼写),
+  且默认尊重 `.gitignore`;`build*/`(7G+2.9G)因此被剪。
+- **实测差异**:`third-party/`(连字符,4.3G vendored)不在其黑名单 — 朴素抓取 >6min、RSS >12GB;
+  契约 `exclude_dirs:["third-party"]` → `--exclude=third-party/` 后冷 ~2.2s / 热 ~1.2s。
+  结论:契约 exclude_dirs 通道是 AscendNPU-IR 上的**必要项**,不是可选项。
+- 锚点文件位于被抓剪目录时计 `outside_corpus` 并写入 Unresolved("not-retrieved ≠ absence"),
+  同时对 vendored 类目录补一跳窄幅 legacy vendored pass;绝不由"Ripwire 无结果"推出语义不存在。
+- 弱结果(ranking 为空)在 auto 下回退 legacy 并注明;显式 `backend:'ripwire'` 保留弱结果原样
+  (`disclosures.weak=true`)供 A/B。
+
+### 14.5 认知边界(硬不变量)
+
+Ripwire 的一切输出都是**检索/排序证据**:1-hop caller 边是 name-based 近似;`ambiguous` 计数由返回行派生
+(同名多文件)。Ripwire 结果不写 mlir-repomap 图、不改 finding、不自动成为 curated evidence、不进语义
+SQLite;也不与 `compiler_knowledge` 做语义锚点融合(Phase R2 候选)。观测流与知识流仅共享 per-agent
+correlation id(`compiler-observation-state.mjs`,进程内 Map,opaque id),无任何语义耦合。
+
+### 14.6 验证与回归
+
+- 单测 `scripts/test/compiler-context-backend.test.mjs`(28 项):二进制发现/缺失/失败/abort、显式 legacy、
+  auto 回退、显式 ripwire 不静默换 legacy、成功 JSON 规范化、弱/歧义/截断/ floors 保留、越界裁剪披露、
+  非 JSON 输出、契约排除映射、outside_corpus、log 取证不受影响、schema/渲染契约、观测流隐私与聚合;
+  Ripwire 以 stub 二进制注入,不依赖真实安装。
+- 全套 85 测试通过;`regression-cases.mjs` 9/9 基线无漂移(旧会话零 Ripwire 调用 = 诚实基线,不回填)。
+- 真实仓库 A/B(AscendNPU-IR,backend 由输入选择):A=MergeVecScope、B=AutoVectorizeV2、
+  C=RegBase pipeline builder;Ripwire 热态 ~2.4-2.5s / 5.3-7.5KB bundle,legacy ~1.4s / 4.4-5.8KB;
+  两后端均零回退、输出有界。细节见实现报告与 `analysis/feedback/context/` 观测流(快照已留存报告内)。
+
+### 14.7 文件清单(Phase R1 增改)
+
+| 文件 | 变更 |
+|---|---|
+| `compiler-context-backend.mjs` | **新增**:CodeContextProvider(发现/生成/规范化/预算/观测) |
+| `compiler-observation-state.mjs` | **新增**:per-agent correlation id 共享注册表 |
+| `compiler-inspect-driver.mjs` | v1.3:backend policy + provider 分支 + 新输出字段 + 观测 |
+| `compiler-inspect-v3-4.cjs` | 由 v3-3 改名+扩展:schema/renderer/240s guard/`?v=1.3` |
+| `compiler-knowledge-v3.cjs` | 由 v2 改名:route 铸造 id 时同步发布到共享观测状态 |
+| `agent.cordis.yml` | 两行指向新插件文件名 |
+| `scripts/analyze-session.mjs` | backend 分解 / fallback 原因 / weak 计数 |
+| `scripts/test/compiler-context-backend.test.mjs` | **新增** 28 项测试 |
+
+---
+
 ### 附录:事实来源
 
-- Preset:`preset.yml`、`agent.cordis.yml`(318 行,含归属理由注释)、`compiler-inspect-v3-3.cjs`(112 行;v3-3 = schema 兼容性修正)、
-  `compiler-inspect-driver.mjs`(548 行)、`compiler-knowledge-v2.cjs`(`compiler_route` + `compiler_knowledge`
-  + 路由段,163 行)、`compiler-knowledge-driver.mjs`(v2.0,correlation/diagnostics/truncation 标注)、
-  `skills/compiler-development/SKILL.md`、`REPOSITORY_CONTRACT_TEMPLATE.md`(65 行)、
-  `scripts/analyze-session.mjs`、`scripts/{feedback-schema,collect-feedback,review-feedback,
-  summarize-feedback,export-feedback-bundle,regression-cases}.mjs`、`scripts/test/`(4 个测试文件 +
-  fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
-  (案例反馈分析报告,本次 v1.2 改动的依据)、`analysis/2026-09-07-knowledge-integration-validation.md`、
-  `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)。
+- Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-4.cjs`、`compiler-inspect-driver.mjs`(v1.3)、
+  `compiler-context-backend.mjs`、`compiler-observation-state.mjs`、
+  `compiler-knowledge-v3.cjs`(`compiler_route` + `compiler_knowledge` + 路由段)、`compiler-knowledge-driver.mjs`
+  (v2.0,correlation/diagnostics/truncation 标注)、`skills/compiler-development/SKILL.md`、
+  `REPOSITORY_CONTRACT_TEMPLATE.md`、`scripts/analyze-session.mjs`、`scripts/{feedback-schema,collect-feedback,
+  review-feedback,summarize-feedback,export-feedback-bundle,regression-cases}.mjs`、`scripts/test/`
+  (5 个测试文件 + fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
+  (案例反馈分析报告,v1.2 改动的依据)、`analysis/2026-09-07-knowledge-integration-validation.md`、
+  `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)。Phase R1 的实现依据另见
+  上游 `redhat-et/ripwire`(c7914e8dc8429a318ffe24f857077e2b1d52d62e)`src/packtask.h`、`src/ingest.h`、
+  `docs/COMMANDS.md` 与第 14 章实测记录。
 - Harness:`docs/architecture/{overview,query-api,schema,status}.md`、`docs/workflows/{repo-map,pass-analysis,pipeline-audit}.md`、
   `docs/goal.md`、`adapters/{README,deepseek-harness/README,deepseek-harness/conventions}.md`、
   `adapters/deepseek-harness/goal-templates/pass-analysis-goal.md`、`adapters/zcode/`、

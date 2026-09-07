@@ -27,7 +27,7 @@ import { createRequire } from 'node:module'
 import { buildCliArgs, boundEnvelope, countDiagnostics, newCorrelationId, runKnowledgeQuery, logQueryRecord, logRouteRecord } from '../../compiler-knowledge-driver.mjs'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-knowledge-v2.cjs')
+const plugin = require('../../compiler-knowledge-v3.cjs')
 
 const STUB_TEMPLATE = `#!/usr/bin/env node
 const args = process.argv.slice(2);

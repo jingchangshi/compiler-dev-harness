@@ -284,9 +284,13 @@
 # consumes host services and publishes no service, so it stays outside a realm.
 # The host process caches preset plugin modules by file URL for its lifetime:
 # after editing the .cjs, rename the file (or bump the driver's ?v= query) so a
-# new mount loads the fresh module instead of the cached one.
+# new mount loads the fresh module instead of the cached one. v3-4: the
+# compiler_inspect tool gained the generic-context backend policy (auto/
+# ripwire/legacy) behind the same tool surface — Ripwire pack-task as the
+# primary provider, the retained rg path as legacy/fallback, backend+fallback
+# always disclosed, and one non-sensitive context observation line per call.
 - id: compiler-inspect
-  name: ./compiler-inspect-v3-3.cjs
+  name: ./compiler-inspect-v3-4.cjs
 
 # Knowledge-first routing over the mlir-compiler-harness repomap queries
 # (adapters/compiler-dev contract): `compiler_route` route-decision tool +
@@ -295,9 +299,12 @@
 # services, publishes no service, no realm. The driver auto-refreshes a stale
 # index before answering (contract rule) and appends non-sensitive route and
 # query records to analysis/feedback/{routes,queries}/ (gitignored), correlated
-# by a per-task correlation id minted by compiler_route.
+# by a per-task correlation id minted by compiler_route. v3: the minted
+# correlation id is also published to the shared per-agent observation state
+# (compiler-observation-state.mjs) so the compiler_inspect context stream can
+# join the same task offline — an opaque id crosses, nothing semantic does.
 - id: compiler-knowledge
-  name: ./compiler-knowledge-v2.cjs
+  name: ./compiler-knowledge-v3.cjs
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 

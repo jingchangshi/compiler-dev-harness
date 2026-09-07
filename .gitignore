@@ -4,5 +4,8 @@ cases/
 # artifacts stay committed; these streams do not.
 analysis/feedback/queries/
 analysis/feedback/routes/
+# Generic-context backend stream (compiler_inspect, Phase R1): counts and
+# durations only — no prompts, task text, source bodies, or raw tool output.
+analysis/feedback/context/
 # Automatic candidate feedback awaits human review via scripts/review-feedback.mjs.
 analysis/feedback/candidates/

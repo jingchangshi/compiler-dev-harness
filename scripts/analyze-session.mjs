@@ -36,6 +36,8 @@ const ARTIFACT_PATH = /(^|[\s"'=(])(\/tmp\/|~\/|\.{0,1}\/?(build|out|dist|\.cach
 const POINTER_RE = /([A-Za-z0-9_.\-/]+\.(?:cpp|cc|cxx|c|h|hpp|hh|py|td|mlir|inc))[:.](\d{1,6})\b/g
 const POINTER_FILE_KEY_RE = /"file":\s*"([^"]+\.(?:cpp|cc|cxx|c|h|hpp|hh|py|td|mlir|inc))"/g
 const CORRELATION_RE = /"correlation_id":\s*"([^"]+)"/
+/** The compiler_inspect backend line the v1.3 bundle renders (Phase R1). */
+const CONTEXT_BACKEND_RE = /^Context backend: (\S+) \(fallback: ([^)]+)\)(.*)$/m
 const MAX_POINTERS_PER_RESULT = 400
 const MAX_ROUTE_GROUPS = 60
 const LARGE_RESULT_BYTES = 8192
@@ -219,6 +221,9 @@ export function analyzeRecords(records) {
     toolCallsByName: {},
     compilerInspectCalls: 0,
     firstCompilerInspectStep: undefined,
+    inspectBackends: {},
+    inspectFallbacks: {},
+    inspectWeakResults: 0,
     compilerKnowledgeCalls: 0,
     firstCompilerKnowledgeStep: undefined,
     knowledgeByCommand: {},
@@ -404,6 +409,19 @@ export function analyzeRecords(records) {
           if (name === COMPACT_KNOWLEDGE_TOOL || name === COMPACT_INSPECT_TOOL) {
             view.pointers = [...extractPointers(text, new Set())].slice(0, MAX_POINTERS_PER_RESULT * 2)
           }
+          if (name === COMPACT_INSPECT_TOOL) {
+            // Backend breakdown (Phase R1): the bundle's Context backend line
+            // names the provider actually used and its fallback, if any. Old
+            // sessions render no such line — zero counts are the honest
+            // pre-integration baseline, never backfilled.
+            const backendLine = CONTEXT_BACKEND_RE.exec(text)
+            if (backendLine !== null) {
+              result.inspectBackends[backendLine[1]] = (result.inspectBackends[backendLine[1]] ?? 0) + 1
+              if (backendLine[2] !== 'none') {
+                result.inspectFallbacks[backendLine[2]] = (result.inspectFallbacks[backendLine[2]] ?? 0) + 1
+              }
+              if (/weak=true/.test(backendLine[0])) result.inspectWeakResults += 1
+            }          }
           resultViews.set(callId, view)
         }
         if (name === 'skill') {
@@ -593,6 +611,12 @@ export function formatReport(result) {
     lines.push(`  ${name}: ${count}`)
   }
   lines.push(`compiler_inspect calls: ${fmtInt(result.compilerInspectCalls)}${result.firstCompilerInspectStep !== undefined ? ` (first at step ${result.firstCompilerInspectStep})` : ''}`)
+  const backendBreakdown = Object.entries(result.inspectBackends).map(([backend, count]) => `${backend}: ${count}`).join(', ')
+  if (backendBreakdown) lines.push(`  compiler_inspect backends: ${backendBreakdown}`)
+  const fallbackBreakdown = Object.entries(result.inspectFallbacks).map(([reason, count]) => `${reason}: ${count}`).join(', ')
+  if (fallbackBreakdown || result.inspectWeakResults > 0) {
+    lines.push(`  legacy fallbacks: ${fallbackBreakdown || 'none'}; weak results: ${fmtInt(result.inspectWeakResults)}`)
+  }
   const knowledgeBreakdown = Object.entries(result.knowledgeByCommand).map(([command, count]) => `${command}: ${count}`).join(', ')
   lines.push(`compiler_knowledge calls: ${fmtInt(result.compilerKnowledgeCalls)}${result.firstCompilerKnowledgeStep !== undefined ? ` (first at step ${result.firstCompilerKnowledgeStep})` : ''}${knowledgeBreakdown ? ` [${knowledgeBreakdown}]` : ''}`)
   lines.push(`bash grep-like search calls (heuristic): ${fmtInt(result.bashGrepLikeCalls)}`)
