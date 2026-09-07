@@ -624,19 +624,21 @@ correlation id(`compiler-observation-state.mjs`,进程内 Map,opaque id),无任�
 > R1.5 不改两个引擎,只加强 compiler-dev-harness 的**观测与发布平面**:把 R1 的
 > "Ripwire 技术上可用"推进到"拥有可复核的生产证据通道"。
 
-### 15.1 Rollout 语义(Workstream A:诚实实验态)
+### 15.1 Rollout 语义(R1.5 原状;R1.7 已将默认改为 auto,见第 16 章)
 
 ```text
 input backend  >  COMPILER_INSPECT_BACKEND  >  REPOSITORY_DEFAULT_BACKEND_POLICY
-(显式实验)        (显式 A/B)                    (仓库默认 = legacy,实验期内不变)
+(显式诊断)        (诊断覆盖)                    (R1.5 时 = legacy;R1.7 Gate B 起 = auto)
 ```
 
 - R1 的矛盾已消除:此前 `auto` 是缺省,装上二进制即切流量,与 `KEEP_RIPWIRE_EXPERIMENTAL` 相悖。
-  现在仓库默认是 **legacy**;`ripwire` = 显式实验;`auto` = 显式能力型 A/B 实验
-  (Ripwire 可用即用、失败受控回退)。后文常量 `REPOSITORY_DEFAULT_BACKEND_POLICY`
-  (compiler-context-backend.mjs)即晋升开关:**晋升 = 一次经评审的默认值变更**,绝不是安装二进制。
+  R1.5 曾将仓库默认改为 **legacy**;`ripwire` = 显式实验;`auto` = 显式能力型 A/B 实验
+  (Ripwire 可用即用、失败受控回退)。常量 `REPOSITORY_DEFAULT_BACKEND_POLICY`
+  (compiler-context-backend.mjs)即发布开关:**变更默认 = 一次经评审的提交**,绝不是安装二进制。
 - 无百分比灰度、无随机路由、无模型/身份参与分配;每次调用的实际 backend 与 fallback 原因
   在结果、渲染文本与观测流三处始终可见。驱动 VERSION 1.3→1.4(默认值属检索协议行为)。
+- **R1.7 更新**:R1.6 修正并钉住归因正确性(Gate A)之后,该常量已改为 `auto`(Gate B,
+  驱动 VERSION 1.5)。本节保留 R1.5 时的语义作为历史记录。
 
 ### 15.2 证据闭环数据流
 
@@ -715,10 +717,99 @@ human promotion review
 
 ---
 
+## 16. Phase R1.6 + R1.7:归因完整性与 auto-by-default 生产发布(2026-09-07 已实现)
+
+> R1.6 先让证据可信(归因正确性),R1.7 才把默认切到 `auto`(零决策的日常工作流)。
+> 顺序不可逆;两个内部 Gate 均以测试钉住。
+
+### 16.1 确认并修复的归因缺陷(Gate A)
+
+R1/R1.5 的 v1 观测记录把"提供者尝试"折叠进"实际服务的提供者":auto→Ripwire 失败→legacy 兜底
+会被记成 `provider=legacy-rg, fallback=true, fallback_reason=…` —— Ripwire 尝试的结果、时长与体量
+全部丢失;显式 Ripwire 失败的 degraded 调用甚至记成 `provider=ripwire`(实际上什么都没服务)。
+
+**Context Observation Protocol v2**(`schema_version: 2`)把四层独立事实分开:
+
+```text
+1. requested policy   backend_policy = auto | ripwire | legacy
+2. provider attempts  attempts[]: { provider, outcome, reason?, duration_ms, result_chars, weak?, truncated? }
+                      outcome ∈ served | weak | error | timeout | invalid-output | not-found
+                      (复用 fallback-reason 词表,单一失败分类法;绝不存 stderr)
+3. delivered context  served_provider = ripwire | legacy-rg | null;delivery_state = served | fallback | degraded
+4. post-delivery      会话分析器按 SERVED backend 归属(见第 15.3 节)
+```
+
+硬规则:**尝试可靠性按尝试的 provider 分组;交付与交付后的行为按服务的 provider 分组**。
+`auto → Ripwire error → legacy served` = Ripwire error +1、legacy served +1,**绝非 legacy error**
+(该中心回归由测试逐字钉住)。成本语义:`attempt.duration_ms` 只计一个 provider 边界
+(Ripwire = pack-task 子进程;legacy = rg 收集块);`total_duration_ms` 是整次 compiler_inspect 调用
+(git/history/diff/日志取证/渲染含入);`delivery_result_chars` 是最终渲染工具体——唯一可跨
+provider 比较的尺寸;attempt `result_chars` 是 provider 边界尺寸(Ripwire=原始 JSON;legacy=渲染包),
+**不跨 provider 比较**。显式 Ripwire 失败:`backend='none'`、`delivery_state='degraded'`、
+渲染 `Context backend: none (… | delivery=degraded: <reason>)` —— 绝不宣称有 provider 服务过。
+v1 历史文件不改写;`normalizeContextObservation()` 在聚合/评述侧恢复逻辑 v2(仅在有据可推时推断,
+否则 unknown)。
+
+### 16.2 auto-by-default 数据流(Gate B)
+
+```text
+normal compiler task
+       |
+       v
+compiler_route
+       |
+       +-- compiler_knowledge            (mlir-compiler-harness, unchanged)
+       v
+compiler_inspect — default policy = auto
+       |
+       +-- Ripwire attempt (--pack-task --json)
+       |       +-- success ---------------+
+       |       +-- failure / weak         |
+       |               |                  |
+       |               v                  |
+       |           legacy fallback        |
+       +----------------------------------+
+                   |
+                   v
+            served context (one bounded bundle; backend + delivery_state + fallback reason disclosed)
+                   |
+                   v
+             Agent behavior
+                   |
+          +--------+--------+
+          |                 |
+          v                 v
+ attempt telemetry     session analysis
+ (context JSONL v2)    (served-backend attribution)
+          |                 |
+          +--------+--------+
+                   |
+                   v
+            promotion evidence (human review)
+```
+
+明确声明:**attempt reliability ≠ delivered-context effectiveness;fallback 失败归属尝试的
+Ripwire;交付后的行为归属实际服务的 provider;auto 是正常工作流,legacy 是兜底/控制后端;
+显式 ripwire 保持严格(失败即 degraded,绝不静默换 legacy);无自动 R2**。不实现 shadow paired
+execution、百分比/随机/身份路由;不新增模型侧工具;不新增 Ripwire 动词;发现
+`discovery-after-Ripwire` 或 `outside_corpus>0` 属高价值观察,由人复核,绝不自动成为实现需求。
+
+### 16.3 未来决策树(仅文档,不实现)
+
+```text
+production evidence
+      +-- Ripwire reliable + useful        → keep auto/default
+      +-- repeated generic retrieval gaps  → improve Ripwire adapter / normalization
+      +-- repeated semantic-anchor gaps    → consider R2 Semantic Anchor Fusion
+      +-- evidence too ambiguous           → consider paired shadow evaluation
+```
+
+---
+
 ### 附录:事实来源
 
-- Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-5.cjs`、`compiler-inspect-driver.mjs`(v1.4)、
-  `compiler-context-backend.mjs`(v1.1,含 rollout 默认常量)、`compiler-observation-state.mjs`、
+- Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-6.cjs`、`compiler-inspect-driver.mjs`(v1.5)、
+  `compiler-context-backend.mjs`(v1.2,rollout 默认常量 + 观测协议 v2 + v1 规范化)、`compiler-observation-state.mjs`、
   `compiler-knowledge-v3.cjs`(`compiler_route` + `compiler_knowledge` + 路由段)、`compiler-knowledge-driver.mjs`
   (v2.0,correlation/diagnostics/truncation 标注)、`skills/compiler-development/SKILL.md`、
   `REPOSITORY_CONTRACT_TEMPLATE.md`(R1.5 增 source-context exclusions)、`scripts/analyze-session.mjs`、
@@ -726,7 +817,10 @@ human promotion review
   regression-cases,evaluate-context-backend}.mjs`、`scripts/test/`
   (6 个测试文件 + fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
   (案例反馈分析报告,v1.2 改动的依据)、`analysis/2026-09-07-knowledge-integration-validation.md`、
-  `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)。Phase R1 的实现依据另见
+  `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)、
+  `analysis/2026-09-07-phase-r1-ripwire-context-backend.md`(Phase R1)、
+  `analysis/2026-09-07-phase-r1-5-ripwire-production-evidence-loop.md`(Phase R1.5)、
+  `analysis/2026-09-07-phase-r1-6-r1-7-context-attribution-auto-rollout.md`(Phase R1.6+R1.7)。Phase R1 的实现依据另见
   上游 `redhat-et/ripwire`(c7914e8dc8429a318ffe24f857077e2b1d52d62e)`src/packtask.h`、`src/ingest.h`、
   `docs/COMMANDS.md` 与第 14 章实测记录。
 - Harness:`docs/architecture/{overview,query-api,schema,status}.md`、`docs/workflows/{repo-map,pass-analysis,pipeline-audit}.md`、

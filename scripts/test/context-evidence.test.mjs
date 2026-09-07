@@ -78,22 +78,24 @@ test('rollout: environment override applies when no input is given', () => {
   assert.equal(resolveBackendPolicy({}, { COMPILER_INSPECT_BACKEND: 'auto' }).policy, 'auto')
 })
 
-test('rollout: the repository default stays legacy while Ripwire is experimental', () => {
+test('rollout (R1.7): the repository default is auto; env still routes around it', () => {
   const policy = resolveBackendPolicy({}, {})
-  assert.equal(policy.policy, 'legacy')
+  assert.equal(policy.policy, 'auto')
   assert.equal(policy.source, 'repository-default')
+  assert.equal(resolveBackendPolicy({}, { COMPILER_INSPECT_BACKEND: 'legacy' }).policy, 'legacy', 'env legacy stays available for diagnosis')
 })
 
-test('rollout: backend choice is visible in the result and the rendered bundle', { skip: !execFileSync('which', ['git']).toString().trim() || !execFileSync('which', ['rg']).toString().trim() }, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'r15-rollout-'))
+test('rollout (R1.7): default auto + no Ripwire installed => safe legacy fallback, still visible', { skip: !execFileSync('which', ['git']).toString().trim() || !execFileSync('which', ['rg']).toString().trim() }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'r17-rollout-'))
   try {
     mkdirSync(join(root, 'lib'), { recursive: true })
     writeFileSync(join(root, 'lib', 'a.cpp'), 'struct FooPass { void runOnOperation(); };\n')
     execFileSync('git', ['init', '-q'], { cwd: root })
-    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: { ...process.env } })
+    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: { ...process.env, RIPWIRE_BIN: '/no/such/ripwire-r17' } })
     assert.equal(bundle.backend, 'legacy-rg')
-    assert.equal(bundle.fallback, false)
-    assert.equal(bundle.fallback_reason, null)
+    assert.equal(bundle.delivery_state, 'fallback')
+    assert.equal(bundle.fallback, true)
+    assert.equal(bundle.fallback_reason, 'ripwire-not-found')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

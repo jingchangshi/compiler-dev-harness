@@ -69,16 +69,17 @@ export const CONTEXT_OBSERVATION_SCHEMA_VERSION = 2
 export const DELIVERY_STATES = ['served', 'fallback', 'degraded']
 
 /**
- * The repository's stable default backend policy (Phase R1.5, Workstream A).
- * While the Ripwire provider is experimental — the R1 decision was
- * KEEP_RIPWIRE_EXPERIMENTAL — the default is the retained legacy rg/git path:
- * installing the binary alone must NOT flip production traffic. `ripwire`
- * (explicit experiment) and `auto` (capability-based A/B experiment) remain
- * explicitly selectable. Promotion later means changing THIS constant in one
- * deliberate, reviewed commit; there is no percentage rollout, no random
- * routing, and no model- or identity-based assignment anywhere.
+ * The repository's stable default backend policy (Phase R1.7, Gate B).
+ * R1.5 held this at `legacy` while attribution was untrustworthy; Gate A
+ * (Phase R1.6) fixed and pinned provider-attribution correctness, so the
+ * default is now `auto`: normal `dsh` usage attempts Ripwire first and falls
+ * back to the retained legacy rg/git path on any failure (finite reason,
+ * never silent) — the user makes no backend decision. `ripwire` stays the
+ * explicit strict-diagnosis mode; `legacy` stays explicitly selectable as the
+ * control/regression backend. Installing or removing the binary changes
+ * nothing about the POLICY — only about which provider auto can reach.
  */
-export const REPOSITORY_DEFAULT_BACKEND_POLICY = 'legacy'
+export const REPOSITORY_DEFAULT_BACKEND_POLICY = 'auto'
 
 /**
  * Finite fallback-reason vocabulary (goal §8). Categories only — stderr text
@@ -189,13 +190,13 @@ function within(root, candidate) {
 }
 
 /**
- * Backend policy resolution (Phase R1.5 Workstream A): explicit tool input
- * wins, then the `COMPILER_INSPECT_BACKEND` environment variable (explicit
- * A/B without source edits), then the stable repository default — `legacy`
- * while Ripwire is experimental. Unknown values degrade to the default with a
- * note rather than failing the call. The resolved policy and its source are
- * carried on every result and observation record, so the backend in effect is
- * always visible.
+ * Backend policy resolution (Phase R1.5 Workstream A; R1.7 Gate B): explicit
+ * tool input wins, then the `COMPILER_INSPECT_BACKEND` environment variable
+ * (diagnosis without source edits), then the stable repository default —
+ * `auto` since R1.7. Unknown values degrade to the default with a note rather
+ * than failing the call. The resolved policy and its source are carried on
+ * every result and observation record, so the backend in effect is always
+ * visible.
  */
 export function resolveBackendPolicy(input = {}, env = process.env) {
   const requested = trim(input.backend).toLowerCase()

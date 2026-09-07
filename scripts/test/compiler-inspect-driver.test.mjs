@@ -27,7 +27,7 @@ import { createRequire } from 'node:module'
 import { inspectCompilerRepository } from '../../compiler-inspect-driver.mjs'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-inspect-v3-5.cjs')
+const plugin = require('../../compiler-inspect-v3-6.cjs')
 
 const hasBin = (bin) => execFileSync('which', [bin], { encoding: 'utf8' }).trim() !== ''
 

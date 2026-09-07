@@ -42,7 +42,7 @@ import { inspectCompilerRepository } from '../../compiler-inspect-driver.mjs'
 import { analyzeRecords, formatReport } from '../analyze-session.mjs'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-inspect-v3-5.cjs')
+const plugin = require('../../compiler-inspect-v3-6.cjs')
 
 const hasBin = (bin) => execFileSync('which', [bin], { encoding: 'utf8' }).trim() !== ''
 
@@ -116,16 +116,18 @@ function readLogLines(dir) {
 
 const stubEnv = (bin, extra = {}) => ({ ...process.env, RIPWIRE_BIN: bin, ...extra })
 
-test('backend policy resolution: input wins, then env, then the repository default (legacy while experimental)', () => {
+test('backend policy resolution: input wins, then env, then the repository default (auto since R1.7)', () => {
   assert.equal(resolveBackendPolicy({ backend: 'ripwire' }, {}).policy, 'ripwire')
   assert.equal(resolveBackendPolicy({ backend: 'auto' }, {}).policy, 'auto')
   assert.equal(resolveBackendPolicy({ backend: 'legacy' }, {}).policy, 'legacy')
   assert.equal(resolveBackendPolicy({}, { COMPILER_INSPECT_BACKEND: 'ripwire' }).policy, 'ripwire')
-  assert.equal(resolveBackendPolicy({}, {}).policy, 'legacy', 'repository default stays legacy while Ripwire is experimental')
+  assert.equal(resolveBackendPolicy({ backend: 'auto' }, { COMPILER_INSPECT_BACKEND: 'legacy' }).policy, 'auto', 'explicit input beats the env override')
+  assert.equal(resolveBackendPolicy({ backend: 'legacy' }, { COMPILER_INSPECT_BACKEND: 'ripwire' }).policy, 'legacy')
+  assert.equal(resolveBackendPolicy({}, {}).policy, 'auto', 'the repository default is auto since Gate B (R1.7)')
   const defaultPolicy = resolveBackendPolicy({}, {})
   assert.equal(defaultPolicy.source, 'repository-default')
   const unknown = resolveBackendPolicy({ backend: 'bogus' }, {})
-  assert.equal(unknown.policy, 'legacy')
+  assert.equal(unknown.policy, 'auto')
   assert.equal(unknown.notes.length, 1, 'unknown values degrade to the repository default with a note')
 })
 
@@ -290,15 +292,30 @@ test('provider: abort propagation maps to ripwire-timeout', { skip: !hasBin('sle
   }
 })
 
-test('seam (repository default): legacy serves while Ripwire is experimental — no fallback, no attempt', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+test('seam (repository default, R1.7 §41): no backend + Ripwire available => auto serves Ripwire', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ripwire-bin-'))
+  const root = makeRepo()
+  try {
+    const bin = makeStubBin(dir)
+    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass' }, undefined, { env: stubEnv(bin) })
+    assert.equal(bundle.backend, 'ripwire', 'the repository default resolves to auto and reaches Ripwire with zero configuration')
+    assert.equal(bundle.delivery_state, 'served')
+    assert.equal(bundle.fallback, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('seam (repository default, R1.7 §41): no backend + Ripwire unavailable => legacy fallback (not Ripwire-dependent)', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
   const root = makeRepo()
   try {
     const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: stubEnv('/no/such/ripwire-at-all') })
-    assert.equal(bundle.backend, 'legacy-rg')
-    assert.equal(bundle.fallback, false, 'the repository default is a policy choice, not a fallback')
-    assert.equal(bundle.fallback_reason, null)
+    assert.equal(bundle.backend, 'legacy-rg', 'the preset stays fully usable without a Ripwire installation')
+    assert.equal(bundle.delivery_state, 'fallback')
+    assert.equal(bundle.fallback, true)
+    assert.equal(bundle.fallback_reason, FALLBACK_REASONS.NOT_FOUND)
     assert.ok(bundle.definitions.length > 0, 'legacy retrieval actually served the bundle')
-    assert.equal(bundle.source_context, null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

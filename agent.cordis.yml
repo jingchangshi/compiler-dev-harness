@@ -290,7 +290,7 @@
 # primary provider, the retained rg path as legacy/fallback, backend+fallback
 # always disclosed, and one non-sensitive context observation line per call.
 - id: compiler-inspect
-  name: ./compiler-inspect-v3-5.cjs
+  name: ./compiler-inspect-v3-6.cjs
 
 # Knowledge-first routing over the mlir-compiler-harness repomap queries
 # (adapters/compiler-dev contract): `compiler_route` route-decision tool +
