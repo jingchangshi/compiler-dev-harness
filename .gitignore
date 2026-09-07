@@ -1,5 +1,8 @@
 cases/
-# Runtime auto-observation of knowledge queries (non-sensitive JSONL, per
-# adapters/compiler-dev/feedback-schema.md). Curated feedback artifacts stay
-# committed; this stream does not.
+# Runtime auto-observation of the knowledge loop (non-sensitive JSONL, per
+# adapters/compiler-dev/feedback-schema.md v2 / ADR-025). Curated feedback
+# artifacts stay committed; these streams do not.
 analysis/feedback/queries/
+analysis/feedback/routes/
+# Automatic candidate feedback awaits human review via scripts/review-feedback.mjs.
+analysis/feedback/candidates/

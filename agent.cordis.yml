@@ -286,16 +286,18 @@
 # after editing the .cjs, rename the file (or bump the driver's ?v= query) so a
 # new mount loads the fresh module instead of the cached one.
 - id: compiler-inspect
-  name: ./compiler-inspect-v3-2.cjs
+  name: ./compiler-inspect-v3-3.cjs
 
 # Knowledge-first routing over the mlir-compiler-harness repomap queries
-# (adapters/compiler-dev contract): `compiler_knowledge` tool + always-on task
-# routing section. Same ownership shape as compiler-inspect: model-facing tool
-# and prompt only, consumes host services, publishes no service, no realm.
-# The driver auto-refreshes a stale index before answering (contract rule) and
-# appends non-sensitive query records to analysis/feedback/queries/ (gitignored).
+# (adapters/compiler-dev contract): `compiler_route` route-decision tool +
+# `compiler_knowledge` tool + always-on task routing section. Same ownership
+# shape as compiler-inspect: model-facing tools and prompt only, consumes host
+# services, publishes no service, no realm. The driver auto-refreshes a stale
+# index before answering (contract rule) and appends non-sensitive route and
+# query records to analysis/feedback/{routes,queries}/ (gitignored), correlated
+# by a per-task correlation id minted by compiler_route.
 - id: compiler-knowledge
-  name: ./compiler-knowledge-v1.cjs
+  name: ./compiler-knowledge-v2.cjs
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 

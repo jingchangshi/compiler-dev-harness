@@ -25,8 +25,19 @@ import { constants, zstdDecompressSync } from 'node:zlib'
 const EDIT_TOOL_NAMES = new Set(['edit', 'write', 'str_replace_editor'])
 const COMPACT_INSPECT_TOOL = 'compiler_inspect'
 const COMPACT_KNOWLEDGE_TOOL = 'compiler_knowledge'
+const COMPACT_ROUTE_TOOL = 'compiler_route'
 /** Heuristic for "manual source search" bash calls: grep/rg/awk/find verbs. */
 const BASH_SEARCH_VERBS = /(^|[\s;&|(])\b(grep|rg|awk|find)\b/
+/** Bounded file reads (sed ranges, head/tail slices) — verification reads when pointed. */
+const BASH_READ_VERBS = /(^|[\s;&|(])\b(sed|head|tail|cat|nl|less)\b/
+/** Generated / artifact-ish path fragments: searches there are operational, not source discovery. */
+const ARTIFACT_PATH = /(^|[\s"'=(])(\/tmp\/|~\/|\.{0,1}\/?(build|out|dist|\.cache|3rdparty|node_modules|\.git)\b|[\w./-]+\.(log|txt|out|json|ninja|bcmlir|mlir))/
+/** file:line pointers from knowledge/inspect results (bounded per result). */
+const POINTER_RE = /([A-Za-z0-9_.\-/]+\.(?:cpp|cc|cxx|c|h|hpp|hh|py|td|mlir|inc))[:.](\d{1,6})\b/g
+const POINTER_FILE_KEY_RE = /"file":\s*"([^"]+\.(?:cpp|cc|cxx|c|h|hpp|hh|py|td|mlir|inc))"/g
+const CORRELATION_RE = /"correlation_id":\s*"([^"]+)"/
+const MAX_POINTERS_PER_RESULT = 400
+const MAX_ROUTE_GROUPS = 60
 const LARGE_RESULT_BYTES = 8192
 const LARGEST_LISTED = 5
 const ZSTD_MAGIC = 0xFD2FB528
@@ -143,6 +154,56 @@ function parseArguments(raw) {
   }
 }
 
+/**
+ * Extract bounded `file:line` pointers from one knowledge/inspect result text.
+ * Only the file paths are kept (plus basenames for operand matching) — never
+ * result content. Both `path:line` occurrences and JSON `"file": "…"` keys count.
+ */
+export function extractPointers(text, into = new Set()) {
+  if (typeof text !== 'string' || text === '') return into
+  let matches = 0
+  for (const match of text.matchAll(POINTER_RE)) {
+    into.add(match[1]); into.add(basenameOf(match[1]))
+    if (++matches >= MAX_POINTERS_PER_RESULT) return into
+  }
+  for (const match of text.matchAll(POINTER_FILE_KEY_RE)) {
+    into.add(match[1]); into.add(basenameOf(match[1]))
+    if (++matches >= MAX_POINTERS_PER_RESULT) return into
+  }
+  return into
+}
+
+function basenameOf(path) {
+  const index = path.lastIndexOf('/')
+  return index === -1 ? path : path.slice(index + 1)
+}
+
+/**
+ * Classify one bash search/read call (§8 precision-first):
+ * - `verification-read`: every referenced file is a pointer a knowledge/inspect
+ *   result already returned — the pointed verification the contract allows;
+ * - `discovery-search`: an unscoped grep/rg/awk/find over non-pointed sources —
+ *   the potential coverage-gap signal;
+ * - `uncertain`: anything not decidable (artifact/log paths, generated dirs,
+ *   mixed commands) — reported, never judged a gap.
+ */
+export function classifySearchCommand(command, pointedFiles) {
+  if (typeof command !== 'string' || command === '') return { category: 'uncertain', pointed: false }
+  const pointed = pointedFiles instanceof Set
+    ? [...pointedFiles].some(path => path.length > 2 && command.includes(path))
+    : false
+  const isSearch = BASH_SEARCH_VERBS.test(command)
+  const isRead = BASH_READ_VERBS.test(command)
+  if (!isSearch && !isRead) return { category: 'uncertain', pointed }
+  if (pointed) return { category: 'verification-read', pointed }
+  if (!isSearch) return { category: 'uncertain', pointed }
+  // Search verb without any pointed file. Reads of logs/artifacts and finds in
+  // generated trees are operational, not source discovery — keep them out of
+  // the gap signal (precision over recall).
+  if (ARTIFACT_PATH.test(command)) return { category: 'uncertain', pointed }
+  return { category: 'discovery-search', pointed }
+}
+
 /** Summarize one parsed record stream into the objective metrics object. */
 export function analyzeRecords(records) {
   const result = {
@@ -177,11 +238,21 @@ export function analyzeRecords(records) {
     compactionEnds: 0,
     compactionErrors: 0,
     turns: {},
+    routeDeclarations: [],
+    routeMetrics: { tasksRouted: 0, knowledgeExpected: 0, knowledgeSkipped: 0, confidence: { low: 0, medium: 0, high: 0 }, byKind: {} },
+    routeGroups: [],
+    adoption: { eligibleTasks: 0, adoptedTasks: 0, missedTasks: 0 },
+    temporal: { firstKnowledgeStep: undefined, firstInspectStep: undefined, firstDiscoverySearchStep: undefined, firstEditStep: undefined, knowledgeBeforeSearch: undefined },
+    searchClassification: { searchCalls: 0, discoverySearches: 0, verificationReads: 0, uncertain: 0, discoveryAfterKnowledge: 0 },
   }
 
   const callNames = new Map()
   // `user/message` payloads carry no turn; attribute them to the open turn.
   let currentTurn
+  // Observation-plane collection: bounded call/result views processed after the
+  // scan (pointers, correlation groups, search classification).
+  const callViews = []
+  const resultViews = new Map()
 
   const turnEntry = (turn) => {
     if (!Number.isInteger(turn)) return undefined
@@ -294,6 +365,15 @@ export function analyzeRecords(records) {
         if (EDIT_TOOL_NAMES.has(data.name) && result.firstEditWriteStep === undefined) {
           result.firstEditWriteStep = data?.step
         }
+        // Bounded view for the observation-plane analysis (no result content).
+        if (data.name === 'bash' || data.name === COMPACT_INSPECT_TOOL
+          || data.name === COMPACT_KNOWLEDGE_TOOL || data.name === COMPACT_ROUTE_TOOL
+          || EDIT_TOOL_NAMES.has(data.name)) {
+          callViews.push({
+            seq: seq ?? 0, turn: data?.turn, step: data?.step, name: data.name,
+            callId: data?.callId, args: parseArguments(data?.arguments),
+          })
+        }
         break
       }
       case 'tool/result': {
@@ -307,6 +387,25 @@ export function analyzeRecords(records) {
         const callId = data?.message?.content?.[0]?.toolCallId
         const name = typeof callId === 'string' ? callNames.get(callId) : undefined
         result.largestToolResults.push({ step: data?.step, tool: name ?? 'unknown', bytes })
+        // Observation-plane result view: correlation ids and file pointers only.
+        if (name === COMPACT_KNOWLEDGE_TOOL || name === COMPACT_INSPECT_TOOL || name === COMPACT_ROUTE_TOOL) {
+          const view = { seq: seq ?? 0, correlationId: undefined, operational: undefined, pointers: undefined }
+          const correlation = CORRELATION_RE.exec(text)
+          if (correlation !== null) view.correlationId = correlation[1]
+          if (name === COMPACT_KNOWLEDGE_TOOL) {
+            view.operational = {
+              staleIndex: /"stale":\s*true/.test(text),
+              refreshPerformed: /index was stale|index --full/.test(text),
+              notFound: /"error":\s*"not found"/.test(text),
+              truncated: /"truncated":\s*true/.test(text),
+              errorKinds: [...text.matchAll(/"error":\s*"([^"]{1,60})"/g)].map(m => m[1]).slice(0, 3),
+            }
+          }
+          if (name === COMPACT_KNOWLEDGE_TOOL || name === COMPACT_INSPECT_TOOL) {
+            view.pointers = [...extractPointers(text, new Set())].slice(0, MAX_POINTERS_PER_RESULT * 2)
+          }
+          resultViews.set(callId, view)
+        }
         if (name === 'skill') {
           const errorText = `${record?.error ? `${record.error.name}: ${record.error.code}` : ''} ${text}`
           if (record?.error !== undefined || /unknown or no longer available|no skill named|unknown skill|is not available/i.test(errorText)) {
@@ -327,6 +426,149 @@ export function analyzeRecords(records) {
       default:
         break
     }
+  }
+
+  // ── observation-plane analysis (offline, after the raw scan) ────────────
+  // One ordered walk over calls and results: pointers accumulate in seq order
+  // so a search is classified only against pointers returned BEFORE it.
+  const timeline = []
+  for (const call of callViews) timeline.push({ kind: 'call', seq: call.seq, call })
+  for (const view of resultViews.values()) timeline.push({ kind: 'result', seq: view.seq, view })
+  timeline.sort((a, b) => a.seq - b.seq)
+  const cumulativePointers = new Set()
+  for (const item of timeline) {
+    if (item.kind === 'result') {
+      for (const pointer of item.view.pointers ?? []) cumulativePointers.add(pointer)
+      continue
+    }
+    const call = item.call
+    if (call.name !== 'bash') continue
+    const command = typeof call.args?.command === 'string' ? call.args.command : ''
+    if (command === '' || !(BASH_SEARCH_VERBS.test(command) || BASH_READ_VERBS.test(command))) continue
+    result.searchClassification.searchCalls += 1
+    call.search = classifySearchCommand(command, cumulativePointers)
+    result.searchClassification[call.search.category === 'discovery-search' ? 'discoverySearches'
+      : call.search.category === 'verification-read' ? 'verificationReads' : 'uncertain'] += 1
+  }
+
+  // Route declarations (one per real task) and their correlation groups.
+  const declarations = callViews
+    .filter(call => call.name === COMPACT_ROUTE_TOOL)
+    .slice(0, 200)
+    .map(call => ({
+      seq: call.seq, turn: call.turn, step: call.step,
+      route: typeof call.args?.route === 'string' ? call.args.route : 'other',
+      knowledgeExpected: call.args?.knowledge_expected === true,
+      confidence: typeof call.args?.confidence === 'string' ? call.args.confidence : undefined,
+      reason: typeof call.args?.reason === 'string' ? call.args.reason : undefined,
+      target: typeof call.args?.target === 'string' ? call.args.target : undefined,
+      correlationId: resultViews.get(call.callId)?.correlationId,
+    }))
+  result.routeDeclarations = declarations
+  for (const declaration of declarations) {
+    result.routeMetrics.tasksRouted += 1
+    if (declaration.knowledgeExpected) result.routeMetrics.knowledgeExpected += 1
+    else result.routeMetrics.knowledgeSkipped += 1
+    if (declaration.confidence !== undefined) result.routeMetrics.confidence[declaration.confidence] += 1
+    result.routeMetrics.byKind[declaration.route] = (result.routeMetrics.byKind[declaration.route] ?? 0) + 1
+  }
+
+  const groups = declarations.map(declaration => ({
+    route: declaration.route,
+    knowledgeExpected: declaration.knowledgeExpected,
+    confidence: declaration.confidence,
+    reason: declaration.reason,
+    target: declaration.target,
+    correlationId: declaration.correlationId,
+    startSeq: declaration.seq,
+    turn: declaration.turn,
+    firstRouteStep: declaration.step,
+    knowledgeCalls: 0,
+    knowledgeCommands: {},
+    knowledgeSeqs: [],
+    firstKnowledgeStep: undefined,
+    firstDiscoveryStep: undefined,
+    discoverySearches: 0,
+    searchAfterQuery: 0,
+    verificationReads: 0,
+    uncertainSearches: 0,
+    editStep: undefined,
+    operational: { staleIndex: false, refreshPerformed: false, notFound: false, truncated: false, errorKinds: [] },
+  }))
+  const byCorrelation = new Map(groups.map(group => [group.correlationId, group]))
+  const groupFor = (seqValue, correlationId) => {
+    if (correlationId !== undefined && byCorrelation.has(correlationId)) return byCorrelation.get(correlationId)
+    let selected
+    for (const group of groups) {
+      if (group.startSeq < seqValue) selected = group
+      else break
+    }
+    return selected
+  }
+  let ungroupedKnowledgeCalls = 0
+  let firstKnowledgeSeq
+  let firstDiscoverySeq
+  for (const item of timeline) {
+    if (item.kind === 'call' && item.call.name === COMPACT_KNOWLEDGE_TOOL) {
+      const view = resultViews.get(item.call.callId)
+      const group = groupFor(item.seq, view?.correlationId)
+      if (group === undefined) { ungroupedKnowledgeCalls += 1; continue }
+      group.knowledgeCalls += 1
+      group.knowledgeSeqs.push(item.seq)
+      if (group.firstKnowledgeStep === undefined) group.firstKnowledgeStep = item.call.step
+      const command = typeof item.call.args?.command === 'string' ? item.call.args.command : undefined
+      if (command !== undefined) group.knowledgeCommands[command] = (group.knowledgeCommands[command] ?? 0) + 1
+      if (view?.correlationId !== undefined && group.correlationId === undefined) group.correlationId = view.correlationId
+      const operational = view?.operational
+      if (operational !== undefined) {
+        group.operational.staleIndex ||= operational.staleIndex
+        group.operational.refreshPerformed ||= operational.refreshPerformed
+        group.operational.notFound ||= operational.notFound
+        group.operational.truncated ||= operational.truncated
+        for (const kind of operational.errorKinds ?? []) {
+          if (!group.operational.errorKinds.includes(kind)) group.operational.errorKinds.push(kind)
+        }
+      }
+      if (firstKnowledgeSeq === undefined) firstKnowledgeSeq = item.seq
+    } else if (item.kind === 'call' && item.call.name === 'bash' && item.call.search !== undefined) {
+      const category = item.call.search.category
+      if (category === 'discovery-search' && firstDiscoverySeq === undefined) firstDiscoverySeq = item.seq
+      const group = groupFor(item.seq)
+      if (group === undefined) continue
+      if (category === 'discovery-search') {
+        group.discoverySearches += 1
+        if (group.knowledgeSeqs.some(knowledgeSeq => knowledgeSeq < item.seq)) {
+          group.searchAfterQuery += 1
+          result.searchClassification.discoveryAfterKnowledge += 1
+          if (group.firstDiscoveryStep === undefined) group.firstDiscoveryStep = item.call.step
+        }
+      } else if (category === 'verification-read') group.verificationReads += 1
+      else group.uncertainSearches += 1
+    } else if (item.kind === 'call' && EDIT_TOOL_NAMES.has(item.call.name)) {
+      const group = groupFor(item.seq)
+      if (group !== undefined && group.editStep === undefined) group.editStep = item.call.step
+    }
+  }
+
+  result.routeGroups = groups.slice(0, MAX_ROUTE_GROUPS)
+  for (const group of result.routeGroups) delete group.knowledgeSeqs
+  result.adoption.eligibleTasks = groups.filter(group => group.knowledgeExpected).length
+  result.adoption.adoptedTasks = groups.filter(group => group.knowledgeExpected && group.knowledgeCalls > 0).length
+  result.adoption.missedTasks = groups.filter(group => group.knowledgeExpected && group.knowledgeCalls === 0).length
+  result.adoption.ungroupedKnowledgeCalls = ungroupedKnowledgeCalls
+  result.temporal.firstKnowledgeStep = result.firstCompilerKnowledgeStep
+  result.temporal.firstInspectStep = result.firstCompilerInspectStep
+  result.temporal.firstEditStep = result.firstEditWriteStep
+  if (firstDiscoverySeq !== undefined) {
+    for (const item of timeline) {
+      if (item.kind === 'call' && item.call.name === 'bash' && item.call.search?.category === 'discovery-search') {
+        result.temporal.firstDiscoverySearchStep = item.call.step
+        break
+      }
+    }
+  }
+  if (firstKnowledgeSeq !== undefined && firstDiscoverySeq !== undefined) {
+    result.temporal.knowledgeBeforeSearch = firstKnowledgeSeq < firstDiscoverySeq
   }
 
   result.largestToolResults.sort((a, b) => b.bytes - a.bytes)
@@ -356,6 +598,15 @@ export function formatReport(result) {
   lines.push(`bash grep-like search calls (heuristic): ${fmtInt(result.bashGrepLikeCalls)}`)
   lines.push(`skill load failures: ${fmtInt(result.skillLoadFailures)}`)
   lines.push(`first edit/write step: ${result.firstEditWriteStep ?? 'none'}`)
+  lines.push('')
+  lines.push(`route decisions: ${fmtInt(result.routeMetrics.tasksRouted)} (knowledge_expected: ${fmtInt(result.routeMetrics.knowledgeExpected)}, declared skips: ${fmtInt(result.routeMetrics.knowledgeSkipped)})`)
+  const kindBreakdown = Object.entries(result.routeMetrics.byKind).map(([kind, count]) => `${kind}: ${count}`).join(', ')
+  if (kindBreakdown) lines.push(`  route kinds: ${kindBreakdown}`)
+  lines.push(`adoption: eligible ${fmtInt(result.adoption.eligibleTasks)}, adopted ${fmtInt(result.adoption.adoptedTasks)}, missed ${fmtInt(result.adoption.missedTasks)}`)
+  const temporal = result.temporal
+  lines.push(`temporal: knowledge@${temporal.firstKnowledgeStep ?? '-'} inspect@${temporal.firstInspectStep ?? '-'} discovery@${temporal.firstDiscoverySearchStep ?? '-'} edit@${temporal.firstEditStep ?? '-'}; knowledge-before-search: ${temporal.knowledgeBeforeSearch === undefined ? 'n/a' : temporal.knowledgeBeforeSearch ? 'yes' : 'no'}`)
+  const search = result.searchClassification
+  lines.push(`search classification: ${search.searchCalls} bash search/read calls — discovery ${fmtInt(search.discoverySearches)} (after knowledge: ${fmtInt(search.discoveryAfterKnowledge)}), verification reads ${fmtInt(search.verificationReads)}, uncertain ${fmtInt(search.uncertain)}`)
   lines.push('')
   lines.push(`tokens: input ${fmtInt(result.inputTokens)}, output ${fmtInt(result.outputTokens)}, cacheRead ${fmtInt(result.cacheReadTokens)}`)
   lines.push(`peak request context: ${fmtInt(result.peakRequestTokens)} tokens${result.peakRequestStep !== undefined ? ` (step ${result.peakRequestStep})` : ''}`)

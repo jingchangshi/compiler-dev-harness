@@ -15,7 +15,7 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 工作方式。`PRESET/preset.yml` 的元数据:
 
 - `name: Compiler Dev`
-- `description: Standard coding capabilities with bounded compiler evidence, human Repository Contracts, and disciplined verification.`
+- `description: Standard coding capabilities with bounded compiler evidence, human Repository Contracts, disciplined verification, and knowledge-first compiler-memory routing.`
 
 目录结构:
 
@@ -23,11 +23,15 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 |---|---|
 | `preset.yml` | preset 元数据(name/description) |
 | `agent.cordis.yml` | **agent-plane 组成**:挂载哪些插件/工具/提示段(第 2 章) |
-| `compiler-inspect-v3-2.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章) |
+| `compiler-inspect-v3-3.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章;v3-3 = output schema 改用当前 harness 支持的 oneOf nullable 形式) |
 | `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章) |
+| `compiler-knowledge-v2.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章) |
+| `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
 | `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的仓库契约模板(第 6 章) |
 | `scripts/analyze-session.mjs` (+`scripts/test/`) | 离线会话日志分析器,非模型侧(第 8 章) |
+| `scripts/{feedback-schema,collect-feedback,review-feedback,summarize-feedback,export-feedback-bundle,regression-cases}.mjs` | Phase 2 离线观测闭环工具(第 13 章) |
+| `analysis/case-baseline.json` | 案例回归基线(仅指标数字) |
 | `README.md` | 面向人的使用说明 |
 
 ## 2. 组成挂载模型(agent.cordis.yml 的分层逻辑)
@@ -64,13 +68,13 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 | plan mode | group(isolate `planMode`)+ `plan-mode`(完整 plan-mode 提示段:先探索后计划、计划 decision-complete、`exit_plan_mode` 收口等) | 计划状态天然 per-agent |
 | compaction | group(isolate `compaction` + `toolResultPruner`)+ `compaction-basic`(**实验性早期压缩策略**,见第 7 章)+ `command-compact` + `tool-result-pruner`(8192/4096/1024) | `tokenMeter` 留在 host;pruner 必须与 compaction-basic 同 realm(经 `ctx.get` 读取) |
 | delegation | group(isolate `workflowEngine`)+ `tool-subagent`(spawn,continuable)、`tool-subagent-fork`(fork,continuable)、`tool-subagent-list-agents`、`workflow-worker-thread`(provider spawn)、`tool-workflow`、`tool-ralph`(maxRounds 64);codex/claude-code 子代理行**存在但 disabled**(需安装对应 Bundle) | subagents 注册表留在 host;`tool-subagent-report` 是 host-plane(continuable setup 单例) |
-| compiler | `compiler-inspect` → `./compiler-inspect-v3-2.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
+| compiler | `compiler-inspect` → `./compiler-inspect-v3-3.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
 | 其余 | `tool-ask-user`、`tool-todo`(`allowParallelInProgress: true`)、`tool-web`(`fetch: false`,`searchTimeoutMs: 60000`) | web 服务与搜索 provider 在 host |
 
 **Preset 明确不挂载**:LSP、hooks、notebook/view 等非标准工具;web fetch 被关闭(仅保留 search)。
 条件禁用走 `!!js` 表达式(仅 shell 两行,按平台二选一)。
 
-## 3. compiler-inspect 插件(compiler-inspect-v3-2.cjs)
+## 3. compiler-inspect 插件(compiler-inspect-v3-3.cjs)
 
 `exports.name = 'compiler-inspect'`,`exports.inject = ['tools', 'systemPrompt']`。`apply(ctx)` 做两件事:
 
@@ -105,8 +109,23 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
   失败模式且不损失封闭性。60s AbortController 兜底,并透传工具调用的 abort 信号。
 - URL 的 `?v=1.2` 用于击穿 host 进程的 ESM 模块缓存(见第 9 章)。
 
-> 命名澄清:文件名 `v3-2` 是插件文件的演进代号;driver 内 `VERSION = '1.2'` 是检索协议版本,
+> 命名澄清:文件名 `v3-3` 是插件文件的演进代号(v3-3 仅将 output schema 的 type 数组改为当前 harness 支持的 `oneOf` nullable 形式,行为不变);driver 内 `VERSION = '1.2'` 是检索协议版本,
 > README 与工具描述均称 v1.2。两套编号并存,勿混淆。
+
+### 3.3 compiler-knowledge 插件(compiler-knowledge-v2.cjs)
+
+`exports.name = 'compiler-knowledge'`,`exports.inject = ['tools', 'systemPrompt']`。归属与
+compiler-inspect 相同:只注册 model-facing 工具与提示段,不发布服务,无 realm。包含:
+
+1. always-on 知识路由段 `compiler-knowledge-routing`(order 115):knowledge-first 顺序、按任务
+   类型路由、保守 skip、不过度查询、反馈工件义务(第 13 章为 Phase 2 扩展后的文本);
+2. `compiler_route` 工具:每任务一次的路由决策 + correlation id 铸造(第 13.2/13.3 节);
+3. `compiler_knowledge` 工具:四个契约查询 + status;driver 经 `?v=` in-process import(与 3.2 的
+   `?v=` 缓存击穿机制相同),240s AbortController 兜底。
+
+内部状态(route→correlation 映射)按 `exec.agent.id` 分键:standing-scope 单次挂载下所有 session
+共享同一模块实例。观察流默认写 preset 的 gitignored `analysis/feedback/{routes,queries}/`,
+`COMPILER_DEV_FEEDBACK_DIR` 可重定向(测试用)。
 
 ## 4. `compiler_inspect` 接口契约(v1.2)
 
@@ -223,16 +242,21 @@ frontmatter:`name: compiler-development`;描述面向 Triton/MLIR/LLVM 类仓库
 逐帧扫描解码;`DSH_SESSION_JSONL` 环境变量可兜底当前会话)。容错:坏行、缺字段、未知事件忽略不致命。
 
 报告字段:session id/preset/cwd/version、provider/model/contextWindow、human turns(+goal 续跑轮)、
-model steps、tool calls 按名分布、**`compiler_inspect` 调用数与首次出现 step**、skill 加载失败数、
-token 记账(input/output/cacheRead)、**峰值请求上下文及 step**、首个 edit/write step、工具结果总量与
-超 8KB 计数及最大 5 条、compaction 启停/错误数、per-turn 明细。
+model steps、tool calls 按名分布、`compiler_inspect` 调用数与首次出现 step、`compiler_knowledge` 调用数
+(按 command 分解)、**Phase 2 观测面**——`compiler_route` 声明(kind/knowledge_expected/confidence/
+correlation id)、route 分组(每组 knowledge 调用数、命令分解、discovery/verification/uncertain 搜索计数、
+edit step、operational 信号)、adoption(eligible/adopted/missed)、temporal 次序(首个 knowledge/inspect/
+discovery/edit step、knowledge-before-search)、**搜索分类**(见第 13.5 节,precision-first)、skill 加载
+失败数、token 记账、峰值请求上下文及 step、首个 edit/write step、工具结果总量与超 8KB 计数及最大 5 条、
+compaction 启停/错误数、per-turn 明细。
 
-用途:preset 变更以真实生产会话数据评判(如早期压缩策略就源自该分析器对四个会话的审计)。
+用途:preset 变更以真实生产会话数据评判(如早期压缩策略就源自该分析器对四个会话的审计);
+`scripts/regression-cases.mjs` 用同一分析器对 `cases/` 语料做基线回归(第 13.6 节)。
 
 ## 9. 运维细节(热更新)
 
 - host 进程按文件 URL 缓存 preset 插件模块,生存期为进程生命周期:
-  - 改 `compiler-inspect-v3-2.cjs` → **重命名文件**并同步组成行;
+  - 改 `compiler-inspect-v3-3.cjs` → **重命名文件**并同步组成行;
   - 改 `compiler-inspect-driver.mjs` → **bump 插件 import 的 `?v=` 查询**;
   - 组成 YAML(行、config、skill 目录)每次会话挂载时重读,无需重启。
 
@@ -387,7 +411,7 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
    工具域,留在 Compiler Dev 会话合规;只有修改 DeepSeek Harness/Cordis/DSH Web 时才触发 Creator-mode
    移交。
 6. **policy/skill 文本的更新落点**:若采纳路由方案,需同步改三处且保持不重复——核心策略
-   (compiler-inspect-v3-2.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
+   (compiler-inspect-v3-3.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
    (skills/compiler-development/SKILL.md)、以及目标仓库契约;harness 侧 conventions.md 是其仓库的
    事实源,preset 侧不应复制其内容。
 
@@ -401,13 +425,113 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
 
 ---
 
+## 13. Phase 2:Production Knowledge Observation Loop(2026-09-07 已实现)
+
+> 第 12 章的接缝 2("repo 侧四个查询已存在,缺路由入口")由上一阶段的 `compiler_knowledge`
+> 集成闭合;本章描述本阶段新增的**观测层**:让正常 CompilerDev 工作自动产生非敏感的
+> architecture feedback evidence,不要求人工记录 case。反馈协议由 mlir-compiler-harness 拥有
+> (`adapters/compiler-dev/feedback-schema.md` v2 / ADR-025 / workflow-contract.md);本 preset
+> 只做 observation 与 candidate 生成。
+
+### 13.1 分层事实(仍遵守第 10 章不变量)
+
+```text
+Agent Workflow(路由 + 查询 + 源码工作)          ← preset/compiler-knowledge-v2.cjs
+Observation Plane(去敏 JSONL 流,gitignored)    ← driver 自动追加
+Offline Plane(分析 / 候选 / 审核 / 汇总 / 导出) ← scripts/*.mjs,Node-only
+Feedback Contract(协议与校验器)                ← mlir-compiler-harness(唯一事实源)
+```
+
+明确不做:在 CompilerDev 实现 compiler graph logic、自动写 mlir-repomap graph、自动改变 finding
+status、把 Agent reasoning 当事实持久化、自动修改 mlir-compiler-harness。没有 candidate→curated
+的自动晋级;没有从摘要到"应实现 Phase X"的自动推论。
+
+### 13.2 Route decision(`compiler_route` 工具)
+
+每个真实任务开始时,模型发一次 `compiler_route`:仅记录 route kind、`knowledge_expected`、
+`confidence`、reason category(enum,禁止自由文本)、可选稳定 target id(如
+`pass:hfusion-merge-vf`)——**不记录 prompt**。route kind 枚举:
+`pass-review / finding-review / pipeline-audit / anchored-code-analysis / single-file-edit /
+build-test / commit-pr / environment / git-operation / log-forensics / other`。保守路由:只有
+high-confidence 的 pass/pipeline/finding 角度才 `knowledge_expected=true`;声明 skip 是正确结果
+(与 v2 协议一致:`knowledge_expected=false` 且零调用不是 failure)。目标不是提高调用率,而是
+**正确路由率**。always-on 策略段(order 115)承载该不变量,skill 承载判断细节(与 3.1/5 的分工
+模式相同)。
+
+### 13.3 Correlation 模型
+
+- `correlation_id` = `k` + 16 hex 随机位,由 `compiler_route` 在任务开始时铸造;不含用户名、
+  prompt、repo path 个人信息;不跨 session 猜关联。
+- 插件内 per-agent(per-Session)状态保存当前 id(standing-scope 单次挂载,多 session 共享模块
+  实例,故必须按 `exec.agent.id` 分键);任务切换 = 新 route = 新 id。
+- 每次 `compiler_knowledge` 的查询记录与返回 envelope 的 `delivery.correlation_id` 都携带该 id:
+  route 决策、查询流、离线分析器三方以 id 关联(会话日志里 route 调用与查询结果均可见 id,
+  JSONL 流补充时长/大小/diagnostics 等运行面细节)。
+
+### 13.4 Runtime 流(gitignored)
+
+| 流 | 位置 | 一行记录 |
+|---|---|---|
+| 路由决策 | `analysis/feedback/routes/<date>.jsonl` | ts, correlation_id, route, knowledge_expected, confidence, reason, target? |
+| 知识查询 | `analysis/feedback/queries/<date>.jsonl` | ts, correlation_id, command, name(target), repo, head, refreshed, duration_ms, result_chars, diagnostics, truncated, error |
+
+查询流**禁止**记录:result body、source text、prompt、reasoning。写入均为 best effort,失败不影响
+查询本身。运行时开销:一个 4 字段工具调用 + 每次查询一行 JSONL;观察层不注入 prompt 内容。
+
+### 13.5 离线分析器与搜索分类(scripts/analyze-session.mjs 扩展)
+
+- Route/adoption/temporal 指标见第 8 章。adoption 只按**已声明**路由计:eligible =
+  `knowledge_expected=true` 的组;missed = eligible 且零次 knowledge 调用。未声明路由的查询归入
+  ungrouped,不产生 adoption 结论。
+- **搜索分类(precision 优先于 recall)**:对每个 bash 搜索/读取调用,以"该调用之前 knowledge/
+  inspect 结果已返回的 file:line 指针集合"为参照:
+  - `verification-read`:命令引用了已指针化的文件(如 query 返回 `foo.cpp:1406` 后
+    `sed -n '1390,1420p' foo.cpp`)——契约允许的验证读取,不是 gap;
+  - `discovery-search`:未命中指针的 repo 级 grep/rg/awk/find(如 query 后 `rg AttrName`
+    全仓)——potential coverage gap 信号;
+  - `uncertain`:产物/日志路径、生成树、无法判定者——报告但**绝不判 gap**。
+- search-after-knowledge 只统计 discovery-search 且组内先有 knowledge 调用者;verification
+  read 与 uncertain 单列。
+
+### 13.6 离线闭环工具(全部 Node-only,stdlib)
+
+| 脚本 | 输入 | 输出 |
+|---|---|---|
+| `collect-feedback.mjs` | session.jsonl[.zstd] + queries 流 | `analysis/feedback/candidates/`(gitignored)v2 candidate(`origin: automatic`) |
+| `review-feedback.mjs` | candidate.json `--accept`/`--reject` | accept:校验→strip runtime 字段→`origin: curated`→写入 `analysis/feedback/`(可选 Python 校验器交叉核对);reject:移入 `candidates/rejected/`。**不自动 commit** |
+| `summarize-feedback.mjs` | sessions + streams + candidates | 结构化计数摘要(仅 counts,无架构推论) |
+| `export-feedback-bundle.mjs` | `--since` + 各流 | tar.gz bundle(manifest/summary/route-summary/query-summary/curated-feedback/,可选 counts-only candidate-summary);**不含 session transcript** |
+| `regression-cases.mjs` | `cases/`(gitignored)+ `analysis/case-baseline.json` | 逐 case 重放对比;drift 非零退出;`--update` 重新背书 |
+
+candidate 类型(保守定义):`query-sufficient`(positive evidence,刻意保留)、
+`query-insufficient`(仅 `possible_gap`,不断言需要什么新 feature)、`adoption-missed`
+(expected=true + confidence=high + 0 调用,`query: null`)、`query-operational`(stale/refresh/
+not-found/truncation/diagnostics/error 信号)。未声明路由、status-only 组、正确 skip 一律不产 candidate。
+隐私:bundle 导出 fail-closed——任一 staged 文件出现 prompt/messages/transcript/source-text/
+credential 类 key、`/home/<user>` 绝对路径、私钥块或超大文件即中止导出且不留 bundle;报告只给
+文件名与 key 名,不给值。测试用 `COMPILER_DEV_FEEDBACK_DIR` 重定向反馈根目录做全隔离。
+
+### 13.7 案例回归(第 16 节要求的落地)
+
+9 个 2026-09-05/06 生产会话(上一阶段案例报告的语料)放入 `cases/` 后经
+`regression-cases.mjs` 重放:基线 `analysis/case-baseline.json` 只含指标数字(session 短 id +
+counts),重放确定性通过;其中全部 9 个会话 `compilerKnowledgeCalls=0`(集成前基线)、
+`compilerInspectCalls` 合计 11,与案例报告一致。旧 cases 由此成为**回归语料**而非持续手工维护的
+case 来源。
+
+---
+
 ### 附录:事实来源
 
-- Preset:`preset.yml`、`agent.cordis.yml`(307 行,含归属理由注释)、`compiler-inspect-v3-2.cjs`(112 行)、
-  `compiler-inspect-driver.mjs`(548 行)、`skills/compiler-development/SKILL.md`(37 行)、
-  `REPOSITORY_CONTRACT_TEMPLATE.md`(65 行)、`scripts/analyze-session.mjs`(367 行)、
-  `scripts/test/compiler-inspect-driver.test.mjs`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
-  (案例反馈分析报告,本次 v1.2 改动的依据)。
+- Preset:`preset.yml`、`agent.cordis.yml`(318 行,含归属理由注释)、`compiler-inspect-v3-3.cjs`(112 行;v3-3 = schema 兼容性修正)、
+  `compiler-inspect-driver.mjs`(548 行)、`compiler-knowledge-v2.cjs`(`compiler_route` + `compiler_knowledge`
+  + 路由段,163 行)、`compiler-knowledge-driver.mjs`(v2.0,correlation/diagnostics/truncation 标注)、
+  `skills/compiler-development/SKILL.md`、`REPOSITORY_CONTRACT_TEMPLATE.md`(65 行)、
+  `scripts/analyze-session.mjs`、`scripts/{feedback-schema,collect-feedback,review-feedback,
+  summarize-feedback,export-feedback-bundle,regression-cases}.mjs`、`scripts/test/`(4 个测试文件 +
+  fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
+  (案例反馈分析报告,本次 v1.2 改动的依据)、`analysis/2026-09-07-knowledge-integration-validation.md`、
+  `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)。
 - Harness:`docs/architecture/{overview,query-api,schema,status}.md`、`docs/workflows/{repo-map,pass-analysis,pipeline-audit}.md`、
   `docs/goal.md`、`adapters/{README,deepseek-harness/README,deepseek-harness/conventions}.md`、
   `adapters/deepseek-harness/goal-templates/pass-analysis-goal.md`、`adapters/zcode/`、

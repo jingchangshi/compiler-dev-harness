@@ -2,7 +2,7 @@
 
 ## Normal workflow
 
-Enter a compiler repository, start DeepSeek Harness with **Compiler Dev**, and describe the task naturally. The preset retains the Standard coding-agent tools and adds an always-on compiler core policy, the `compiler-development` skill for detailed guidance, `compiler_inspect`, and the `compiler_knowledge` memory queries.
+Enter a compiler repository, start DeepSeek Harness with **Compiler Dev**, and describe the task naturally. The preset retains the Standard coding-agent tools and adds an always-on compiler core policy, the `compiler-development` skill for detailed guidance, `compiler_inspect`, the `compiler_knowledge` memory queries, and one compact `compiler_route` decision per task.
 
 "Understand repository architecture" means the smallest architecture or data-flow model needed for the current task. "Understand latest N commits" means use N commits as the relevant history-search horizon, not read every full commit.
 
@@ -12,9 +12,37 @@ The composition's `compiler-inspect` row registers a compact, always-on system-p
 
 ## Compiler knowledge (`compiler_knowledge`)
 
-`compiler-knowledge-v1.cjs` + `compiler-knowledge-driver.mjs` wrap the mlir-compiler-harness repomap CLI (its `adapters/compiler-dev/` contract) in-process: `review`, `finding-impact`, `pipeline-stages`, `evidence`, and `status`, against the target compiler repository (`repo_root`, default cwd; the repo needs an `mlir-repomap` index; binary discovery: `MLIR_REPOMAP_BIN` → the sibling `mlir-compiler-harness` venv → PATH). The driver enforces the query contract mechanically: a stale index is refreshed with `index --full` before results are served (~97s on AscendNPU-IR; `refresh_index:false` returns an explicit refusal instead), CLI errors/diagnostics/`"not found"` pass through verbatim as valid negatives, and the JSON envelope is delivered under a strict 24K budget (largest arrays cut with notes; `command`/`index`/`result` never dropped). It is deterministic retrieval only — no reasoning, no finding mutations, no graph writes.
+`compiler-knowledge-v2.cjs` + `compiler-knowledge-driver.mjs` wrap the mlir-compiler-harness repomap CLI (its `adapters/compiler-dev/` contract) in-process: `review`, `finding-impact`, `pipeline-stages`, `evidence`, and `status`, against the target compiler repository (`repo_root`, default cwd; the repo needs an `mlir-repomap` index; binary discovery: `MLIR_REPOMAP_BIN` → the sibling `mlir-compiler-harness` venv → PATH). The driver enforces the query contract mechanically: a stale index is refreshed with `index --full` before results are served (~97s on AscendNPU-IR; `refresh_index:false` returns an explicit refusal instead), CLI errors/diagnostics/`"not found"` pass through verbatim as valid negatives, and the JSON envelope is delivered under a strict 24K budget (largest arrays cut with notes; `command`/`index`/`result` never dropped). It is deterministic retrieval only — no reasoning, no finding mutations, no graph writes.
 
 Task-type routing (always-on section + skill): compiler bug / pass review → `review` first, then `finding-impact`/`evidence`; architecture / pipeline audit / Triton lowering → `pipeline-stages` first; skip for build/test execution, single-known-file edits, commit/PR text, or on user request. Per-query costs measured 2026-09-07: ~3.4s (AscendNPU-IR), ~0.4s (triton-ascend); the three validation tasks (MergeVecScope review, AutoVectorizeV2 finding re-check, Triton lowering audit) needed 7 queries and **zero** discovery greps (`analysis/2026-09-07-knowledge-integration-validation.md`).
+
+## Production knowledge observation loop (Phase 2)
+
+Normal work produces the architecture feedback evidence by itself — no manual case logging:
+
+```text
+normal compiler task
+        ↓
+automatic route decision (compiler_route, one per task)
+        ↓
+knowledge queries if useful (workflow-contract sequences, never over-queried)
+        ↓
+source work
+        ↓
+automatic observation (gitignored streams) → offline analysis → candidates
+        ↓
+periodic: human review → curated feedback → bundle export → architecture review
+```
+
+- **Route decision.** Each real task opens with one compact `compiler_route` call: route kind (`pass-review`, `finding-review`, `pipeline-audit`, `anchored-code-analysis`, `single-file-edit`, `build-test`, `commit-pr`, `environment`, `git-operation`, `log-forensics`, `other`), `knowledge_expected`, `confidence`, a reason category (never free text), and an optional stable target id. Routing is conservative: only high-confidence pass/pipeline/finding angles expect knowledge; the goal is correct routing, not a higher call rate. Declared skips are recorded too — a skip is a correct outcome, not a failure.
+- **Correlation.** The route decision mints an opaque per-task `correlation_id` (`k<16 hex>`; no user, prompt, or path data) that is stamped onto every subsequent `compiler_knowledge` record and delivery envelope, joining route decisions, the query stream, and the offline session analyzer. State is keyed per session inside the plugin; one id per task.
+- **Runtime streams (gitignored).** `analysis/feedback/routes/<date>.jsonl` (one line per route decision) and `analysis/feedback/queries/<date>.jsonl` (one line per served query: ts, correlation id, command, target name, repo, HEAD, refresh, duration, size, diagnostic count, truncation, error state — never result bodies, source text, or prompts).
+- **Offline analyzer.** `scripts/analyze-session.mjs` adds route metrics, adoption (eligible/adopted/missed per declared route), temporal order (first knowledge/inspect/discovery/edit step, `knowledge-before-search`), and a precision-first search classification: bounded reads of files a query already pointed at are **verification reads**, unscoped repo-wide searches after queries are **discovery searches** (potential coverage gap), and everything undecidable — artifact/log paths, generated trees — is reported as **uncertain**, never judged a gap.
+- **Candidates.** `scripts/collect-feedback.mjs <session.jsonl...>` correlates session logs with the query stream and writes Feedback Protocol v2 candidates (`origin: automatic`) to `analysis/feedback/candidates/` (gitignored): `query-sufficient` (positive evidence — deliberately kept), `query-insufficient` (discovery after queries; only a `possible_gap`, never an asserted feature), `adoption-missed` (high-confidence expected + zero calls), `query-operational` (stale/refresh/not-found/truncation/diagnostic/error signals). Undeclared routes, status-only groups, and correct skips produce nothing.
+- **Review.** `scripts/review-feedback.mjs <candidate.json> --accept` validates, strips any runtime-only field, marks `origin: curated`, and moves the artifact to `analysis/feedback/` (cross-checked against the sibling harness's Python validator when its venv exists). `--reject` parks the candidate under `candidates/rejected/`. Nothing commits itself.
+- **Batch + bundle.** `scripts/summarize-feedback.mjs` aggregates sessions/streams/candidates into counts only (route kinds, adoption, sufficiency, operational failures, command breakdown, gap categories) — it never concludes "implement X". `scripts/export-feedback-bundle.mjs --since YYYY-MM-DD --output bundle.tar.gz` packages `manifest.json`, `summary.json`, `route-summary.json`, `query-summary.json`, and `curated-feedback/` (optionally a counts-only `candidate-summary.json`), and fails closed if any staged file contains prompt/message/transcript/source-text/credential keys, user home paths, key material, or oversized files.
+
+The feedback protocol is owned by mlir-compiler-harness (`adapters/compiler-dev/feedback-schema.md` v2, ADR-025); this preset only observes and produces candidates. Automatic candidates never mutate the compiler graph or finding lifecycle.
 
 ## Repository Contract
 
@@ -38,18 +66,31 @@ Derived from four audited production sessions: long discovery phases reached ~25
 
 ```sh
 node scripts/analyze-session.mjs <session.jsonl>     # or .jsonl.zstd
-node --test scripts/test/                            # run its tests
+node --test "scripts/test/*.test.mjs"                # run its tests
 ```
 
-It reports model steps, tool-call mix, `compiler_inspect` adoption, `compiler_knowledge` adoption with a per-command breakdown, bash grep-like search calls (heuristic baseline for "manual source search"), skill-load failures, token accounting, peak request context, tool-result sizes, and compaction counts. It reads the concatenated-frame `.jsonl.zstd` artifacts this deployment writes and tolerates missing fields.
+It reports model steps, tool-call mix, `compiler_inspect` adoption, `compiler_knowledge` adoption with a per-command breakdown, `compiler_route` decisions with route/adoption metrics, the temporal order of knowledge, inspect, discovery-search, and edit steps, a precision-first classification of bash searches (verification reads vs discovery searches vs uncertain), skill-load failures, token accounting, peak request context, tool-result sizes, and compaction counts. It reads the concatenated-frame `.jsonl.zstd` artifacts this deployment writes and tolerates missing fields.
+
+## Case regression corpus
+
+`cases/` (gitignored) holds exported production session logs (`cases/<id>/session.jsonl` or `cases/<id>.jsonl[.zstd]`). `scripts/regression-cases.mjs` replays every log through the analyzer and compares the metrics against the committed baseline `analysis/case-baseline.json` (metric numbers only — session ids and counts, no paths or prompts):
+
+```sh
+node scripts/regression-cases.mjs           # replay + compare; non-zero exit on drift
+node scripts/regression-cases.mjs --update  # re-bless after an intended analyzer change
+```
+
+The 9 audited 2026-09-05/06 production sessions are the initial corpus: all replay deterministically with zero `compiler_knowledge` calls (the pre-integration baseline) and their historical `compiler_inspect`/search metrics intact. Old cases are a regression corpus, not a manual case source.
 
 ## Reloading preset plugin edits
 
-The host process caches preset plugin modules by file URL for its lifetime. After editing `compiler-inspect-v3-2.cjs`, rename the file (and update the composition row); after editing `compiler-inspect-driver.mjs`, bump the `?v=` query in the plugin's import. Composition YAML (rows, config, skill directories) is re-read at every session mount.
+Tool output schemas use the harness's supported JSON-schema subset: a single `type` string (type arrays are rejected at mount), `oneOf` for nullable shapes, and only type/oneOf/properties/required/additionalProperties/items/enum/const plus description/title/default/examples. The v3-3 rename exists because the 2026-09-07 harness build started enforcing this.
+
+The host process caches preset plugin modules by file URL for its lifetime. After editing `compiler-inspect-v3-3.cjs` or `compiler-knowledge-v2.cjs`, rename the file (and update the composition row); after editing `compiler-inspect-driver.mjs` or `compiler-knowledge-driver.mjs`, bump the `?v=` query in the plugin's import. Composition YAML (rows, config, skill directories) is re-read at every session mount.
 
 ## Case feedback loop
 
-`analysis/` holds the case feedback analysis report, validation records, and, under `analysis/feedback/`, the knowledge-system feedback artifacts (`adapters/compiler-dev/feedback-schema.md` v1 in mlir-compiler-harness) distilled from audited production sessions. They record how the knowledge layer was (or was not) consumable — they are not compiler findings and are owned by this preset's maintainers. Two observation streams live here: the curated, committed feedback JSONs, and `analysis/feedback/queries/` (gitignored) where the `compiler_knowledge` driver auto-appends one non-sensitive JSONL line per served query (command, target, repo, head, duration, size, truncation, error — never prompts, content, or source text). Agents write curated artifacts when a task exposes a real knowledge gap; the driver's log is the always-on denominator under them.
+`analysis/` holds the case feedback analysis report, validation records, and, under `analysis/feedback/`, the knowledge-system feedback artifacts distilled from audited production sessions. They record how the knowledge layer was (or was not) consumable — they are not compiler findings and are owned by this preset's maintainers. Curated, committed JSONs follow mlir-compiler-harness `adapters/compiler-dev/feedback-schema.md` (v1 corpus preserved; new artifacts use v2, ADR-025). Two runtime observation streams feed the loop from the gitignored side: `analysis/feedback/queries/` (auto-appended by the `compiler_knowledge` driver) and `analysis/feedback/routes/` (auto-appended by `compiler_route`), both correlated by per-task correlation ids; automatic candidates accumulate under `analysis/feedback/candidates/` until a human reviews them via `scripts/review-feedback.mjs`. Agents hand-write curated artifacts only for verified gaps the automation cannot see.
 
 ## Phase 2 candidates
 

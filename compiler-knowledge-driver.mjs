@@ -15,19 +15,23 @@
  * - diagnostics, `error: "not found"` and empty memory pass through verbatim:
  *   they are valid negative results, never padded with guesses.
  *
- * Session observation (non-sensitive, feedback-schema.md spirit): every served
- * query appends one JSON line to `<preset>/analysis/feedback/queries/<date>.jsonl`
- * — command, target name, repo, head, refresh flag, duration, size, truncation,
- * error. No prompts, no result content, no source text. The directory is
- * gitignored runtime data; curated feedback artifacts stay hand-written.
+ * Session observation (non-sensitive, feedback-schema.md v2 / ADR-025 spirit):
+ * every served query appends one JSON line to
+ * `<preset>/analysis/feedback/queries/<date>.jsonl` — command, target name,
+ * repo, head, refresh flag, duration, size, diagnostics, truncation, error,
+ * plus the session/task correlation id and the declared route context. Every
+ * `compiler_route` decision appends one line to
+ * `<preset>/analysis/feedback/routes/<date>.jsonl`. No prompts, no result
+ * content, no source text. Both directories are gitignored runtime data;
+ * curated feedback artifacts stay hand-reviewed.
  */
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve, basename } from 'node:path'
+import { join, resolve, basename } from 'node:path'
 
-const VERSION = '1.0'
+const VERSION = '2.0'
 /** Strict budget for the delivered JSON envelope. */
 const MAX_TOTAL_CHARS = 24000
 /** Overall guard for one tool call: covers an auto `index --full` (~100s on AscendNPU-IR) plus the query. */
@@ -153,14 +157,46 @@ export function boundEnvelope(envelope, budget = MAX_TOTAL_CHARS) {
 
 /** Non-sensitive auto-log: one JSON line per served command. Best effort. */
 export function logQueryRecord(record, logDir) {
-  const dir = logDir ?? fileURLToPath(new URL('./analysis/feedback/queries', import.meta.url))
+  return appendRecord(record, logDir, 'queries')
+}
+
+/** Non-sensitive auto-log: one JSON line per declared route decision. Best effort. */
+export function logRouteRecord(record, logDir) {
+  return appendRecord(record, logDir, 'routes')
+}
+
+function appendRecord(record, logDir, stream) {
+  const dir = logDir ?? fileURLToPath(new URL(`./analysis/feedback/${stream}`, import.meta.url))
   try {
     mkdirSync(dir, { recursive: true })
-    appendFileSync(join(dir, `${record.ts.slice(0, 10)}.jsonl`), `${JSON.stringify(record)}\n`)
+    appendFileSync(join(dir, `${String(record.ts).slice(0, 10)}.jsonl`), `${JSON.stringify(record)}\n`)
     return true
   } catch {
     return false
   }
+}
+
+/**
+ * Count diagnostics rows anywhere under a parsed `result` (arrays keyed
+ * `diagnostics`/`diagnostic`), capped so a pathological envelope cannot spin
+ * the walk. Diagnostic COUNT is an operational signal; content is never kept.
+ */
+export function countDiagnostics(node, budget = { remaining: 20000, count: 0 }) {
+  if (node === null || typeof node !== 'object' || budget.remaining <= 0) return budget.count
+  budget.remaining -= 1
+  if (Array.isArray(node)) {
+    for (const item of node) countDiagnostics(item, budget)
+    return budget.count
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if ((key === 'diagnostics' || key === 'diagnostic') && Array.isArray(value)) {
+      budget.count += value.length
+      if (budget.count > 999) { budget.count = 999; return budget.count }
+    } else if (value !== null && typeof value === 'object') {
+      countDiagnostics(value, budget)
+    }
+  }
+  return budget.count
 }
 
 function parseEnvelope(stdout, stderr, exitCode) {
@@ -179,9 +215,12 @@ function parseEnvelope(stdout, stderr, exitCode) {
 /**
  * One contract-shaped knowledge query. Returns the CLI envelope with the
  * stable `command`/`index`/`result` fields plus a `delivery` section (version,
- * refresh report, truncation notes) — never result content of its own.
+ * correlation id, refresh report, truncation notes) — never result content of
+ * its own. `context` carries the observation plane's session/task correlation
+ * state: `{ correlationId, route?, knowledgeExpected? }`; the route fields are
+ * stamped onto the query record only when a route decision was declared.
  */
-export async function runKnowledgeQuery(input, signal, logDir, env = process.env) {
+export async function runKnowledgeQuery(input, signal, logDir, env = process.env, context = undefined) {
   signal?.throwIfAborted()
   const cmd = input.command
   if (!ALL_COMMANDS.has(cmd)) {
@@ -193,6 +232,7 @@ export async function runKnowledgeQuery(input, signal, logDir, env = process.env
   const started = Date.now()
   const record = {
     ts: new Date().toISOString(),
+    correlation_id: typeof context?.correlationId === 'string' ? context.correlationId : undefined,
     command: cmd,
     name: typeof input.name === 'string' ? input.name.trim() : undefined,
     repo: basename(root),
@@ -200,10 +240,16 @@ export async function runKnowledgeQuery(input, signal, logDir, env = process.env
     refreshed: false,
     duration_ms: undefined,
     result_chars: undefined,
+    diagnostics: undefined,
     truncated: false,
     error: undefined,
   }
+  if (context?.route !== undefined) {
+    record.route = context.route
+    record.knowledge_expected = context.knowledgeExpected
+  }
   const delivery = { driver: VERSION, notes: [] }
+  if (typeof context?.correlationId === 'string') delivery.correlation_id = context.correlationId
 
   // Freshness probe first: stale worktrees are refreshed before reasoning.
   const probe = await command(binary.path, ['--repo', root, 'status'], root, signal, REFRESH_GUARD_MS, env)
@@ -216,9 +262,11 @@ export async function runKnowledgeQuery(input, signal, logDir, env = process.env
   const stale = indexInfo.stale === true
 
   if (cmd === 'status') {
+    record.diagnostics = countDiagnostics(probeEnvelope.result)
     const { envelope, text, truncated } = boundEnvelope({
       command: 'status', index: indexInfo, result: probeEnvelope.result, delivery,
     })
+    envelope.delivery.truncated = truncated
     record.duration_ms = Date.now() - started
     record.result_chars = text.length
     record.truncated = truncated
@@ -279,11 +327,24 @@ export async function runKnowledgeQuery(input, signal, logDir, env = process.env
     delivery,
   })
   if (truncated) delivery.notes.push(...notes)
+  delivery.truncated = truncated
   record.result_chars = text.length
+  record.diagnostics = countDiagnostics(envelope.result)
   record.truncated = truncated
   if (envelope.result?.error !== undefined) record.error = String(envelope.result.error).slice(0, 80)
   logQueryRecord(record, logDir)
   return bounded
+}
+
+/**
+ * One opaque session/task correlation id: random digits only — no username,
+ * no prompt, no repo path. `random` is injectable for deterministic tests.
+ */
+export function newCorrelationId(random = Math.random) {
+  const hex = '0123456789abcdef'
+  let id = 'k'
+  for (let i = 0; i < 16; i += 1) id += hex[Math.floor(random() * 16) % 16]
+  return id
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

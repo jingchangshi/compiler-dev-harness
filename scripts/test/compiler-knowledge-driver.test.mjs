@@ -24,10 +24,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
-import { buildCliArgs, boundEnvelope, runKnowledgeQuery, logQueryRecord } from '../../compiler-knowledge-driver.mjs'
+import { buildCliArgs, boundEnvelope, countDiagnostics, newCorrelationId, runKnowledgeQuery, logQueryRecord, logRouteRecord } from '../../compiler-knowledge-driver.mjs'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-knowledge-v1.cjs')
+const plugin = require('../../compiler-knowledge-v2.cjs')
 
 const STUB_TEMPLATE = `#!/usr/bin/env node
 const args = process.argv.slice(2);
@@ -129,6 +129,78 @@ test('logQueryRecord writes one JSON line with operational fields only', () => {
     assert.equal(JSON.stringify(record).includes('MergeVecScope.cpp'), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('newCorrelationId is opaque, well-shaped, and injectable for tests', () => {
+  const id = newCorrelationId()
+  assert.match(id, /^k[0-9a-f]{16}$/)
+  let step = 0
+  const deterministic = newCorrelationId(() => step++ / 16)
+  assert.equal(deterministic, 'k0123456789abcdef')
+  assert.notEqual(newCorrelationId(), newCorrelationId())
+})
+
+test('countDiagnostics sums diagnostics arrays under result without keeping content', () => {
+  assert.equal(countDiagnostics({ diagnostics: ['a', 'b'], nested: { diagnostic: ['c'] } }), 3)
+  assert.equal(countDiagnostics({ result: { no: 'diagnostics here' } }), 0)
+  assert.equal(countDiagnostics({ diagnostics: Array.from({ length: 5000 }, (_, i) => i) }), 999, 'capped')
+})
+
+test('logRouteRecord appends one line per route decision to the routes stream', () => {
+  const dir = makeLogDir()
+  try {
+    const ok = logRouteRecord({
+      ts: '2026-09-07T00:00:00.000Z', correlation_id: 'k1111111111111111', route: 'pass-review',
+      knowledge_expected: true, confidence: 'high', reason: 'named-pass', target: 'pass:hfusion-merge-vf',
+    }, dir)
+    assert.equal(ok, true)
+    const record = readLogLines(dir)[0]
+    assert.equal(record.route, 'pass-review')
+    assert.equal(record.correlation_id, 'k1111111111111111')
+    for (const key of Object.keys(record)) {
+      assert.ok(['ts', 'correlation_id', 'route', 'knowledge_expected', 'confidence', 'reason', 'target'].includes(key), `unexpected field ${key}`)
+    }
+    assert.equal(JSON.stringify(record).includes('prompt'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('runKnowledgeQuery stamps the correlation context onto the record and delivery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compiler-knowledge-test-'))
+  const logDir = makeLogDir()
+  try {
+    const bin = makeStubBin(dir)
+    const envelope = await runKnowledgeQuery(
+      { command: 'review', name: 'MergeVecScope', repo_root: dir },
+      undefined,
+      logDir,
+      { MLIR_REPOMAP_BIN: bin, STUB_STALE: '0' },
+      { correlationId: 'k1111111111111111', route: 'pass-review', knowledgeExpected: true },
+    )
+    assert.equal(envelope.delivery.correlation_id, 'k1111111111111111')
+    assert.equal(envelope.delivery.truncated, false)
+    const lines = readLogLines(logDir)
+    assert.equal(lines[0].correlation_id, 'k1111111111111111')
+    assert.equal(lines[0].route, 'pass-review')
+    assert.equal(lines[0].knowledge_expected, true)
+    assert.equal(lines[0].diagnostics, 0)
+    // Without context the record stays backward compatible (no route fields).
+    rmSync(logDir, { recursive: true, force: true })
+    mkdirSync(logDir, { recursive: true })
+    await runKnowledgeQuery(
+      { command: 'status', repo_root: dir },
+      undefined,
+      logDir,
+      { MLIR_REPOMAP_BIN: bin },
+    )
+    const plain = readLogLines(logDir)[0]
+    assert.equal(plain.correlation_id, undefined)
+    assert.equal(plain.route, undefined)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(logDir, { recursive: true, force: true })
   }
 })
 
@@ -263,11 +335,70 @@ test('plugin registers the routing section and the compiler_knowledge tool', () 
   assert.equal(sections.length, 1)
   assert.equal(sections[0].name, 'compiler-knowledge-routing')
   assert.equal(sections[0].order, 115)
-  const tool = tools[0]
-  assert.equal(tool.name, 'compiler_knowledge')
+  assert.equal(tools.length, 2, 'compiler_route + compiler_knowledge')
+  const tool = tools.find(t => t.name === 'compiler_knowledge')
   assert.equal(tool.parameters.required[0], 'command')
   assert.deepEqual(tool.parameters.properties.command.enum,
     ['review', 'finding-impact', 'pipeline-stages', 'evidence', 'status'])
   JSON.parse(JSON.stringify(tool.parameters))
   JSON.parse(JSON.stringify(tool.output.schema))
+})
+
+test('compiler_route declares the conservative route vocabulary', () => {
+  const tools = []
+  plugin.apply({ systemPrompt: { section: () => {} }, tools: { register: t => tools.push(t) } })
+  const route = tools.find(t => t.name === 'compiler_route')
+  assert.ok(route, 'compiler_route registered')
+  assert.deepEqual(route.parameters.properties.route.enum, [
+    'pass-review', 'finding-review', 'pipeline-audit', 'anchored-code-analysis',
+    'single-file-edit', 'build-test', 'commit-pr', 'environment', 'git-operation',
+    'log-forensics', 'other',
+  ])
+  assert.deepEqual(route.parameters.properties.reason.enum.length >= 10, true)
+  assert.deepEqual(route.parameters.required, ['route', 'knowledge_expected', 'confidence', 'reason'])
+  JSON.parse(JSON.stringify(route.parameters))
+  JSON.parse(JSON.stringify(route.output.schema))
+})
+
+test('compiler_route mints the correlation id that compiler_knowledge reuses', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compiler-knowledge-test-'))
+  const logDir = makeLogDir()
+  try {
+    const bin = makeStubBin(dir)
+    process.env.MLIR_REPOMAP_BIN = bin
+    process.env.COMPILER_DEV_FEEDBACK_DIR = logDir
+    const tools = []
+    plugin.apply({ systemPrompt: { section: () => {} }, tools: { register: t => tools.push(t) } })
+    const route = tools.find(t => t.name === 'compiler_route')
+    const knowledge = tools.find(t => t.name === 'compiler_knowledge')
+    const exec = () => ({ agent: { id: 'agent-test-1' }, signal: new AbortController().signal })
+    const decision = await route.execute(
+      { route: 'pass-review', knowledge_expected: true, confidence: 'high', reason: 'named-pass', target: 'pass:hfusion-merge-vf' },
+      exec(),
+    )
+    assert.match(decision.correlation_id, /^k[0-9a-f]{16}$/)
+    assert.equal(decision.logged, true)
+    const envelope = await knowledge.execute({ command: 'review', name: 'MergeVecScope', repo_root: dir }, exec())
+    assert.equal(envelope.delivery.correlation_id, decision.correlation_id)
+    // A second task re-mints; the two correlation ids differ.
+    const next = await route.execute(
+      { route: 'build-test', knowledge_expected: false, confidence: 'high', reason: 'execution-only' },
+      exec(),
+    )
+    assert.notEqual(next.correlation_id, decision.correlation_id)
+    // Per-agent isolation: another agent starts from its own fallback id.
+    const other = await knowledge.execute({ command: 'status', repo_root: dir }, { agent: { id: 'agent-test-2' }, signal: new AbortController().signal })
+    assert.notEqual(other.delivery.correlation_id, next.correlation_id)
+    // Route records landed in the redirected routes stream.
+    const routesDir = readdirSync(logDir).find(name => name === 'routes')
+    assert.ok(routesDir, 'routes stream created')
+    const routeLines = readLogLines(join(logDir, 'routes'))
+    assert.deepEqual(routeLines.map(r => r.route), ['pass-review', 'build-test'])
+    assert.equal(routeLines[0].target, 'pass:hfusion-merge-vf')
+  } finally {
+    delete process.env.MLIR_REPOMAP_BIN
+    delete process.env.COMPILER_DEV_FEEDBACK_DIR
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(logDir, { recursive: true, force: true })
+  }
 })
