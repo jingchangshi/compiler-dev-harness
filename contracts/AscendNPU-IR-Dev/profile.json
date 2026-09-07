@@ -1,0 +1,7 @@
+{
+  "profile": "AscendNPU-IR-Dev",
+  "match": {
+    "remoteSubstrings": ["AscendNPU-IR"],
+    "basenames": ["AscendNPU-IR-Dev"]
+  }
+}

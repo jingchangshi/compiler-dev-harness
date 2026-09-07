@@ -1,16 +1,16 @@
-# Local Host Environment
+# Local Host Environment (AscendNPU-IR)
 
-> Centralized tracking copy managed in `compiler-dev-harness/contracts/AscendNPU-IR-Dev/`.
-> Base: `AscendNPU-IR-Dev/AGENTS.local.md` (snapshot 2026-09-07). Integrates
-> contract proposal 2 (toolchain paths and standard repair, Section 3) from
-> `analysis/contract-proposals-2026-09-06.md`; proposal 3 is Triton-distributed-ascend
-> only and is intentionally not tracked here. See `contracts/README.md`.
+> Host-local overlay source, owned by compiler-dev-harness
+> (`contracts/AscendNPU-IR-Dev/AGENTS.local.md`). It is materialized into the
+> target repository as `AGENTS.local.md` by
+> `scripts/prepare-workspace.mjs`; edit this file in the harness, never the
+> materialized copy in the target repository, and re-run preparation after
+> editing.
 
 This file defines machine-specific configuration for the current server.
 
-It supplements `AGENTS.md`.
-
-Repository-wide build/test semantics belong in `AGENTS.md`; only host-specific facts belong here.
+It supplements the target repository's team-owned `AGENTS.md`; repository-wide
+build/test semantics stay there, only host-specific facts belong here.
 
 ---
 
@@ -96,7 +96,7 @@ Ascend950PR
 
 Policy:
 
-- If `npu-smi` and the expected device/runtime are available, device tests may be run according to `AGENTS.md`.
+- If `npu-smi` and the expected device/runtime are available, device tests may be run according to the team `AGENTS.md`.
 - If unavailable, report device-dependent tests as unavailable.
 - Do not fake or override accelerator detection merely to execute device tests.
 
@@ -175,7 +175,7 @@ NONE
 
 An agent-discovered workaround is not automatically approved.
 
-If a new workaround is needed, report it to the user and suggest adding it here.
+If a new workaround is needed, report it to the user and suggest adding it here (to the harness source of this file, not to a materialized copy).
 
 ---
 
@@ -198,4 +198,3 @@ server-specific device limitation
 ```
 
 Keep this section short.
-

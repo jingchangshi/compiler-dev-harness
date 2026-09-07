@@ -2,7 +2,7 @@
 
 ## Normal workflow
 
-Enter a compiler repository, start DeepSeek Harness with **Compiler Dev**, and describe the task naturally. The preset retains the Standard coding-agent tools and adds an always-on compiler core policy, the `compiler-development` skill for detailed guidance, `compiler_inspect`, the `compiler_knowledge` memory queries, and one compact `compiler_route` decision per task.
+Enter a compiler repository, run workspace preparation once (`node <harness>/scripts/prepare-workspace.mjs`) so the team `AGENTS.md` stays untouched and the harness-owned `AGENTS.local.md` overlay is present, then start DeepSeek Harness with **Compiler Dev** and describe the task naturally. The preset retains the Standard coding-agent tools and adds an always-on compiler core policy, the `compiler-development` skill for detailed guidance, `compiler_inspect`, the `compiler_knowledge` memory queries, and one compact `compiler_route` decision per task.
 
 "Understand repository architecture" means the smallest architecture or data-flow model needed for the current task. "Understand latest N commits" means use N commits as the relevant history-search horizon, not read every full commit.
 
@@ -70,9 +70,19 @@ Phase R1.5 made the generic-context telemetry a first-class part of this loop (s
 
 ## Repository Contract
 
-For a repository used repeatedly, a human maintains the operational facts in `AGENTS.md` or a nearby Markdown file based on `REPOSITORY_CONTRACT_TEMPLATE.md`. Put every-task facts in `AGENTS.md`; put larger subsystem-specific material in a project-local Skill or reference. Do not duplicate it.
+Repository instructions have two ownership domains that must not compete for the same tracked file:
 
-A contract can specify environment initialization, build and test commands, accelerator constraints, submodule policy, repository boundaries, and approved workarounds. The agent uses these facts before operational discovery and validates a command only at its point of use. It never silently persists inferred facts; it reports a newly useful workaround as a candidate human update.
+- **Team-owned**: the target repository's tracked `AGENTS.md` is upstream operational truth. The harness reads it but never overwrites, symlinks, or `skip-worktree`s it — a normal `git pull`/rebase updates it with no manual recovery.
+- **Harness-owned**: `contracts/<Profile>/REPOSITORY_PROFILE.md` (harness retrieval policy: `compiler_inspect` `exclude_dirs`/`contract_test_dirs`, tool disciplines, repo conventions the team does not track) and `contracts/<Profile>/AGENTS.local.md` (host-specific facts). `scripts/prepare-workspace.mjs` materializes both into the target worktree as one managed, content-marked `AGENTS.local.md` overlay (excluded locally via `info/exclude`, never the team `.gitignore`), which the DSH instruction loader reads additively after the team file.
+
+```sh
+node <harness>/scripts/prepare-workspace.mjs [target-root]     # first use, new worktree, or after editing harness sources
+node <harness>/scripts/prepare-workspace.mjs --check [target]  # validate/repair triage
+```
+
+The command is idempotent and conflict-safe: it refuses to overwrite an unmanaged `AGENTS.local.md` and detects hand edits by digest. Run it once after `git clone` and once per linked worktree; nothing is needed after `git pull`/rebase. Ownership rules, migration record, and worktree semantics: `contracts/README.md` and `ARCHITECTURE.md` §6.
+
+Team-side contracts are drafted by the human in the target repository from `REPOSITORY_CONTRACT_TEMPLATE.md`. Put every-task facts in the team `AGENTS.md`; put larger subsystem-specific material in a project-local Skill or reference. Do not duplicate it. A contract can specify environment initialization, build and test commands, accelerator constraints, submodule policy, repository boundaries, and approved workarounds. The agent uses these facts before operational discovery and validates a command only at its point of use. It never silently persists inferred facts; it reports a newly useful workaround as a candidate human update for the correct ownership domain.
 
 ## Inspection and verification
 

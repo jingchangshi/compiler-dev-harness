@@ -30,7 +30,9 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 | `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
 | `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
-| `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的仓库契约模板(第 6 章) |
+| `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的**团队**仓库契约模板——模板产物落在目标仓库,不在本仓库(第 6 章) |
+| `contracts/<Profile>/{REPOSITORY_PROFILE.md,AGENTS.local.md,profile.json}` | harness 拥有的仓库 profile 与 host-local 事实源;**不含**团队 `AGENTS.md` 快照(第 6 章) |
+| `scripts/prepare-workspace.mjs` | workspace 准备:把 harness profile+local 事实物化为目标仓库的 `AGENTS.local.md` 托管副本,并通过 `info/exclude` 本地排除(第 6 章) |
 | `scripts/analyze-session.mjs` (+`scripts/test/`) | 离线会话日志分析器,非模型侧(第 8 章) |
 | `scripts/{feedback-schema,collect-feedback,review-feedback,summarize-feedback,export-feedback-bundle,regression-cases}.mjs` | Phase 2 离线观测闭环工具(第 13 章) |
 | `analysis/case-baseline.json` | 案例回归基线(仅指标数字) |
@@ -202,6 +204,8 @@ frontmatter:`name: compiler-development`;描述面向 Triton/MLIR/LLVM 类仓库
 2. **Repository Contract**:权威次序 = 人类契约 > 项目指令 > 源码 > 相关历史 > 推断。先读契约再做任何
    环境/构建/测试发现;契约命令只在用点验证,不换成推断流程。无契约时只发现本任务所需事实。
    **绝不持久化推断出的操作事实**;有用 workaround 以候选契约更新提议给人;仅当人类要求时才用模板起草。
+   契约是**两层所有权的合成**——目标仓库团队维护的 `AGENTS.md`(上游权威,harness 只读)+
+   harness 物化的 `AGENTS.local.md` 本地覆盖(见第 6 章);两者相加构成有效仓库操作上下文。
 3. **Checkpoint**:一行 `Decision; Evidence; Uncertainty; Patch implication`,在三个时机取——设计敏感
    编辑前、大型发现移交实现时、结论稳定后的长验证前。**v1.2**:长实现/调试循环中,工作假设每变更一次
    重取一行;只存在于 reasoning 中的决策不算 checkpoint;设计定稿的 checkpoint 须把已声明契约与实现逐条
@@ -212,19 +216,108 @@ frontmatter:`name: compiler-development`;描述面向 Triton/MLIR/LLVM 类仓库
 5. **混合/域外工作**:混合请求按内部工作包分组,证据充分的包先行。Harness/preset/Cordis/Web/运行时
    基建工作移交 fresh Creator-mode 会话,交接带简短观察总结。
 
-## 6. Repository Contract(人在回路)
+## 6. Repository Contract(人在回路)与所有权分层
 
-`REPOSITORY_CONTRACT_TEMPLATE.md` 的字段:仓库身份/主分支、主编译器子系统、环境初始化(shell/Python/conda/
-工具链/设备)、规范与增量构建命令、验证命令(fast/default、Python、MLIR-lit-FileCheck、C++、host-only、
-加速器必需)、格式化/lint、**仓库边界**(禁改/禁广探目录、生成或 vendored 目录)、子模块策略、已知环境约束、
-已知支持的 workaround、**do-not-rediscover 规则**(必须复用而非从构建文件/CI/脚本重新推导的事实)。
+### 6.1 指令所有权
+
+每个目标编译器仓库的操作指令分三个所有权域,互不竞争同一文件:
+
+```text
+          team Git 历史
+                │
+                ▼
+        目标仓库 AGENTS.md            ← 团队拥有、tracked、正常 Git 演进
+        (harness 只读,永不改写)
+                │
+                ├──────────────────────────────┐
+                │                              │
+                ▼                              ▼
+        仓库操作规则(构建/测试/   compiler-dev-harness
+        环境/子模块 —— 上游真相)            │
+                                            ├─ contracts/<Profile>/REPOSITORY_PROFILE.md
+                                            │    harness 仓库 profile(检索策略、
+                                            │    compiler_inspect 契约参数、
+                                            │    团队不跟踪的仓库约定)
+                                            └─ contracts/<Profile>/AGENTS.local.md
+                                                 host-local 事实
+                                                     │
+                                                     ▼
+                                        scripts/prepare-workspace.mjs
+                                                     │
+                                                     ▼
+                                        <TARGET>/AGENTS.local.md
+                                        生成的托管副本(带 managed 头 +
+                                        内容 SHA-256),经 info/exclude
+                                        本地排除,不进团队 Git
+                                                     │
+                                                     ▼
+                                        有效 agent 操作上下文
+                                        (base AGENTS.md + additive local overlay)
+```
+
+- **团队 `AGENTS.md`**(目标仓库 tracked):上游操作真相。harness 可读、可检测存在/是否
+  tracked,但**永不**改写、永不 symlink、永不 `skip-worktree`/`assume-unchanged`、
+  永不在 pull/rebase 后恢复副本、永不静默合并 harness 策略。普通 `git pull`/rebase
+  正常更新它,无需任何人工恢复。
+- **`REPOSITORY_PROFILE.md`**(harness 拥有):`compiler_inspect` 契约参数
+  (`exclude_dirs`、`contract_test_dirs`)、harness 工具纪律、团队不跟踪的仓库约定
+  (如 `hivmc/` A5 镜像树、pipeline 日志取证)。
+- **`AGENTS.local.md`**(harness 源 → 目标仓库物化):host 专属事实(工具链路径、
+  加速器、本机 workaround)。部署名固定为 `AGENTS.local.md`,因为这是 DeepSeek
+  Harness agent-instructions 加载器默认的 additive local-overlay 候选(base 之后
+  渲染,不遮蔽 base);源文件名与部署名的区分见 `contracts/README.md`。
+
+### 6.2 workspace 准备(`scripts/prepare-workspace.mjs`)
+
+```sh
+node <harness>/scripts/prepare-workspace.mjs [target-root]     # 物化/更新
+node <harness>/scripts/prepare-workspace.mjs --check [target]  # 只校验
+# 可选:--profile <name> 强制 profile;--harness-root <dir> 覆盖 harness 根
+```
+
+- **身份识别**:显式 `--profile` > Git remote URL 匹配 > worktree 目录名;无匹配或
+  歧义是有界失败(exit 2),绝不猜测。远程匹配是第一依据,因为 clone/worktree 的本地
+  目录名可变(实测:远程仓库名 `AscendNPU-IR`,本地目录 `AscendNPU-IR-Dev`)。
+- **物化策略**:`REPOSITORY_PROFILE.md` + `AGENTS.local.md` 合成为**生成的托管副本**
+  (非 symlink):一个部署文件必须承载两个 harness 源;副本自包含,不会因 harness
+  checkout 移动而悬空;新鲜度由重跑 prepare 确定性地处理。托管头含
+  `compiler-dev-harness:managed-v1` + profile 名 + 正文 SHA-256——所有权按内容识别
+  而非文件名,摘要漂移即检出手工编辑。
+- **Git 排除**:经 `git rev-parse --git-path info/exclude` 写入**common** Git dir
+  (对普通 clone、linked worktree、`.git` 为文件的布局都正确),**不改团队 tracked
+  `.gitignore`**;幂等(已有裸条目或标记块则不动,畸形块报错不重写),并用
+  `git check-ignore` 验证。
+- **冲突安全**:unmanaged 已存在文件、异 profile 托管件、手工编辑过的托管件一律拒绝
+  并给出可操作指引,且拒绝发生在任何 mutation 之前;团队 `AGENTS.md` 上游变化无需
+  任何处理,prepare 照常成功。退出码:0 成功,1 冲突/漂移,2 用法/未知 profile。
+- **worktree**:排除条目在 common dir,**所有 linked worktree 共享**;托管副本按
+  working tree 各自一份——新 worktree 只需在其中跑一次 prepare,无需手工编辑
+  Git 元数据。
+- **启动边界**:preset 组成(agent.cordis.yml 的行 = service/tool/prompt 注册)没有
+  可靠的启动脚本钩子,故调用保持显式、幂等;架构为将来自动调用留好接口(直接包一层
+  即可),不伪造钩子。
+- **域边界**:workspace 准备是基建,与 `compiler_inspect`、`compiler_knowledge`、
+  Ripwire、feedback 协议零共享代码路径;其观察不写入知识反馈。
+
+### 6.3 契约字段与机制
+
+`REPOSITORY_CONTRACT_TEMPLATE.md` 的字段(模板给**团队**在目标仓库维护
+`AGENTS.md` 用,产物不落在本仓库):仓库身份/主分支、主编译器子系统、环境初始化
+(shell/Python/conda/工具链/设备)、规范与增量构建命令、验证命令(fast/default、
+Python、MLIR-lit-FileCheck、C++、host-only、加速器必需)、格式化/lint、
+**仓库边界**(禁改/禁广探目录、生成或 vendored 目录)、子模块策略、已知环境约束、
+已知支持的 workaround、**do-not-rediscover 规则**(必须复用而非从构建文件/CI/脚本
+重新推导的事实)。
 
 机制要点:
 
 - 契约字段完成后即权威,只在用点验证。
-- 每任务都用的事实放 AGENTS.md;更大的子系统材料放项目本地 skill/参考;不复制。
-- `contract_test_dirs` 与 `exclude_dirs` 是契约进入 `compiler_inspect` 的两个参数通道(见 4.1)。
-- agent 永不静默持久化推断事实;新 workaround 作为候选人类更新上报。
+- 每任务都用的事实放团队 `AGENTS.md`;harness 检索参数放 `REPOSITORY_PROFILE.md`;
+  更大的子系统材料放项目本地 skill/参考;host 事实放 `AGENTS.local.md`;不复制。
+- `contract_test_dirs` 与 `exclude_dirs` 是契约进入 `compiler_inspect` 的两个参数
+  通道(见 4.1);在新所有权模型下它们由 harness profile 持有并经本地覆盖到达 agent。
+- agent 永不静默持久化推断事实;新 workaround 作为候选人类更新上报到对应所有权域
+  (团队规则→目标仓库契约;host 事实→harness `AGENTS.local.md` 源)。
 
 ## 7. 上下文预算机制(三层)
 

@@ -20,9 +20,11 @@ Treat "latest N commits" as a search horizon, not a request to read every commit
 
 ## Repository Contracts
 
-Order of authority: human Repository Contract, then project instructions, then source, relevant history, inference. Load the contract before any environment, build, or test discovery. Validate a contract command only at its point of use; never replace it with an inferred procedure. Without a contract, discover only the facts this task needs and mention the missing contract only when it affects efficiency.
+The effective repository operating context is a composition of two ownership domains: the target repository's team-owned, tracked `AGENTS.md` (upstream truth; the harness reads it but never modifies it) plus the harness-materialized `AGENTS.local.md` local overlay (harness-owned repository profile and host-specific facts). Order of authority: that composed repository context, then project instructions, then source, relevant history, inference. Load it before any environment, build, or test discovery. Validate a contract command only at its point of use; never replace it with an inferred procedure. Without a contract, discover only the facts this task needs and mention the missing contract only when it affects efficiency.
 
-Never persist inferred operational facts. When a workaround or environment fact proves useful, propose it to the human as a candidate contract update. Use `REPOSITORY_CONTRACT_TEMPLATE.md` only when the human asks to establish or draft one.
+When the overlay is missing in a target worktree, workspace preparation installs it deterministically: `node <harness>/scripts/prepare-workspace.mjs [target-root]` (idempotent; `--check` validates without writing). It never touches the team `AGENTS.md`, refuses to overwrite an unmanaged `AGENTS.local.md`, and excludes the managed overlay via Git's `info/exclude` — so a normal `git pull`/rebase updates the team file with no manual recovery.
+
+Never persist inferred operational facts. When a workaround or environment fact proves useful, propose it to the human as a candidate update for the correct ownership domain — team-repository rules belong in the team's `AGENTS.md` (proposed through the human), harness retrieval parameters and host facts belong in the harness `contracts/<Profile>/` sources. Use `REPOSITORY_CONTRACT_TEMPLATE.md` only when the human asks to establish or draft the team-side contract.
 
 ## Checkpoints
 

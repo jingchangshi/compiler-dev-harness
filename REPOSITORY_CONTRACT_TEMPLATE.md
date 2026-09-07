@@ -1,5 +1,11 @@
 # Repository Contract
 
+> Team-side template: copy this into the **target** repository and let the team
+> maintain it there as its tracked `AGENTS.md` (or a nearby file). It is not
+> meant to be committed to compiler-dev-harness — harness-owned additions live
+> in `contracts/<Profile>/` and reach the worktree through
+> `scripts/prepare-workspace.mjs` (see `contracts/README.md`).
+
 Human-authored operational knowledge for this repository. Keep commands and constraints current. `compiler-dev` treats completed fields as authoritative and validates them only when used.
 
 ## Repository identity
