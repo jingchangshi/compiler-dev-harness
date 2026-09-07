@@ -61,9 +61,9 @@ import {
   outsideCorpusFiles,
   resolveBackendPolicy,
   runRipwireContext,
-} from './compiler-context-backend.mjs'
+} from './compiler-context-backend.mjs?v=1.1'
 
-const VERSION = '1.3'
+const VERSION = '1.4'
 const MAX_ITEMS = 12
 const MAX_LINE_CHARS = 280
 const MAX_DEFINITION_ITEMS = 10
@@ -493,12 +493,14 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
     unresolved.push('Not a Git worktree: Git state and history are unavailable.')
   }
 
-  // ── Backend policy (v1.3): CodeContextProvider selection ─────────────────
-  // `auto` prefers the Ripwire provider and falls back to the retained legacy
-  // rg/git path on ANY failure (finite reason, never silent); `ripwire` is
-  // explicit and degrades loudly instead of pretending legacy ran; `legacy`
-  // forces the rg/git path (regression + A/B). Only the GENERIC source
-  // retrieval swaps — git state/diff/history and log forensics run regardless.
+  // ── Backend policy (v1.3, R1.5 Workstream A): CodeContextProvider selection ──
+  // The repository default is `legacy` while Ripwire is experimental (R1
+  // decision KEEP_RIPWIRE_EXPERIMENTAL): installing the binary alone never
+  // flips production traffic. `ripwire` is the explicit experiment; `auto` is
+  // the capability-based A/B experiment (Ripwire when usable, controlled
+  // legacy fallback on ANY failure — finite reason, never silent). Only the
+  // GENERIC source retrieval swaps — git state/diff/history and log forensics
+  // run regardless.
   const policy = resolveBackendPolicy(input, env)
   unresolved.push(...policy.notes)
   const task = trim(input.task)

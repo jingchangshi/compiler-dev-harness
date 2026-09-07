@@ -42,11 +42,23 @@ import { existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const VERSION = '1.0'
+export const VERSION = '1.1'
 export const MODE = 'pack-task'
 export const BACKEND_RIPWIRE = 'ripwire'
 export const BACKEND_LEGACY = 'legacy-rg'
 export const BACKEND_POLICIES = ['auto', 'ripwire', 'legacy']
+
+/**
+ * The repository's stable default backend policy (Phase R1.5, Workstream A).
+ * While the Ripwire provider is experimental — the R1 decision was
+ * KEEP_RIPWIRE_EXPERIMENTAL — the default is the retained legacy rg/git path:
+ * installing the binary alone must NOT flip production traffic. `ripwire`
+ * (explicit experiment) and `auto` (capability-based A/B experiment) remain
+ * explicitly selectable. Promotion later means changing THIS constant in one
+ * deliberate, reviewed commit; there is no percentage rollout, no random
+ * routing, and no model- or identity-based assignment anywhere.
+ */
+export const REPOSITORY_DEFAULT_BACKEND_POLICY = 'legacy'
 
 /**
  * Finite fallback-reason vocabulary (goal §8). Categories only — stderr text
@@ -140,10 +152,13 @@ function within(root, candidate) {
 }
 
 /**
- * Backend policy resolution (goal §7): explicit tool input wins, then the
- * `COMPILER_INSPECT_BACKEND` environment variable (A/B without source
- * edits), then `auto`. Unknown values degrade to `auto` with a note rather
- * than failing the call.
+ * Backend policy resolution (Phase R1.5 Workstream A): explicit tool input
+ * wins, then the `COMPILER_INSPECT_BACKEND` environment variable (explicit
+ * A/B without source edits), then the stable repository default — `legacy`
+ * while Ripwire is experimental. Unknown values degrade to the default with a
+ * note rather than failing the call. The resolved policy and its source are
+ * carried on every result and observation record, so the backend in effect is
+ * always visible.
  */
 export function resolveBackendPolicy(input = {}, env = process.env) {
   const requested = trim(input.backend).toLowerCase()
@@ -153,9 +168,11 @@ export function resolveBackendPolicy(input = {}, env = process.env) {
     return { policy: fromEnv, source: 'env', notes: requested === '' ? [] : [`Unknown backend '${requested}' ignored; using env policy '${fromEnv}'.`] }
   }
   return {
-    policy: 'auto',
-    source: 'default',
-    notes: requested === '' ? [] : [`Unknown backend '${requested}' ignored; using 'auto'.`],
+    policy: REPOSITORY_DEFAULT_BACKEND_POLICY,
+    source: 'repository-default',
+    notes: requested === ''
+      ? []
+      : [`Unknown backend '${requested}' ignored; using the repository default '${REPOSITORY_DEFAULT_BACKEND_POLICY}'.`],
   }
 }
 

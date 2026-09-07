@@ -224,6 +224,7 @@ export function analyzeRecords(records) {
     inspectBackends: {},
     inspectFallbacks: {},
     inspectWeakResults: 0,
+    inspectTruncatedResults: 0,
     compilerKnowledgeCalls: 0,
     firstCompilerKnowledgeStep: undefined,
     knowledgeByCommand: {},
@@ -247,8 +248,13 @@ export function analyzeRecords(records) {
     routeMetrics: { tasksRouted: 0, knowledgeExpected: 0, knowledgeSkipped: 0, confidence: { low: 0, medium: 0, high: 0 }, byKind: {} },
     routeGroups: [],
     adoption: { eligibleTasks: 0, adoptedTasks: 0, missedTasks: 0 },
-    temporal: { firstKnowledgeStep: undefined, firstInspectStep: undefined, firstDiscoverySearchStep: undefined, firstEditStep: undefined, knowledgeBeforeSearch: undefined },
-    searchClassification: { searchCalls: 0, discoverySearches: 0, verificationReads: 0, uncertain: 0, discoveryAfterKnowledge: 0 },
+    temporal: { firstKnowledgeStep: undefined, firstInspectStep: undefined, firstDiscoverySearchStep: undefined, firstEditStep: undefined, knowledgeBeforeSearch: undefined, inspectBeforeSearch: undefined },
+    searchClassification: { searchCalls: 0, discoverySearches: 0, verificationReads: 0, uncertain: 0, discoveryAfterKnowledge: 0, discoveryAfterInspect: 0, verificationAfterInspect: 0 },
+    /** Per-backend attribution of searches that FOLLOW an inspect result
+     *  (ordering only — never causality). Backend is the one that served the
+     *  most recent inspect result before the search; `unknown` means the
+     *  result predates the v1.3 backend line. */
+    searchAfterInspectByBackend: {},
   }
 
   const callNames = new Map()
@@ -394,7 +400,7 @@ export function analyzeRecords(records) {
         result.largestToolResults.push({ step: data?.step, tool: name ?? 'unknown', bytes })
         // Observation-plane result view: correlation ids and file pointers only.
         if (name === COMPACT_KNOWLEDGE_TOOL || name === COMPACT_INSPECT_TOOL || name === COMPACT_ROUTE_TOOL) {
-          const view = { seq: seq ?? 0, correlationId: undefined, operational: undefined, pointers: undefined }
+          const view = { seq: seq ?? 0, callId, correlationId: undefined, operational: undefined, pointers: undefined, inspect: undefined }
           const correlation = CORRELATION_RE.exec(text)
           if (correlation !== null) view.correlationId = correlation[1]
           if (name === COMPACT_KNOWLEDGE_TOOL) {
@@ -420,8 +426,15 @@ export function analyzeRecords(records) {
               if (backendLine[2] !== 'none') {
                 result.inspectFallbacks[backendLine[2]] = (result.inspectFallbacks[backendLine[2]] ?? 0) + 1
               }
-              if (/weak=true/.test(backendLine[0])) result.inspectWeakResults += 1
-            }          }
+              const weak = /weak=true/.test(backendLine[0])
+              if (weak) result.inspectWeakResults += 1
+              const truncated = /TRUNCATED/.test(text)
+              if (truncated) result.inspectTruncatedResults += 1
+              // R1.5: keep the backend facts on the view so the ordered walk
+              // can attribute searches that FOLLOW this result.
+              view.inspect = { backend: backendLine[1], fallbackReason: backendLine[2] !== 'none' ? backendLine[2] : undefined, weak, truncated }
+            }
+          }
           resultViews.set(callId, view)
         }
         if (name === 'skill') {
@@ -454,9 +467,15 @@ export function analyzeRecords(records) {
   for (const view of resultViews.values()) timeline.push({ kind: 'result', seq: view.seq, view })
   timeline.sort((a, b) => a.seq - b.seq)
   const cumulativePointers = new Set()
+  // R1.5: inspect results in seq order (backend from the v1.3 Context backend
+  // line; absent for pre-R1.3 sessions). Ordering evidence only.
+  const inspectResults = []
   for (const item of timeline) {
     if (item.kind === 'result') {
       for (const pointer of item.view.pointers ?? []) cumulativePointers.add(pointer)
+      if (item.view?.inspect !== undefined) {
+        inspectResults.push({ seq: item.seq, callId: item.view.callId, backend: item.view.inspect.backend })
+      }
       continue
     }
     const call = item.call
@@ -510,6 +529,15 @@ export function analyzeRecords(records) {
     searchAfterQuery: 0,
     verificationReads: 0,
     uncertainSearches: 0,
+    // R1.5 context-plane fields: inspect calls/results inside the route window.
+    inspectCalls: 0,
+    inspectBackends: {},
+    inspectFallbacks: {},
+    inspectWeakResults: 0,
+    firstInspectStep: undefined,
+    discoveryAfterInspect: 0,
+    verificationAfterInspect: 0,
+    inspectResultSeqs: [],
     editStep: undefined,
     operational: { staleIndex: false, refreshPerformed: false, notFound: false, truncated: false, errorKinds: [] },
   }))
@@ -526,7 +554,33 @@ export function analyzeRecords(records) {
   let ungroupedKnowledgeCalls = 0
   let firstKnowledgeSeq
   let firstDiscoverySeq
+  let firstInspectSeq
+  const inspectCallById = new Map(callViews.filter(call => call.name === COMPACT_INSPECT_TOOL && typeof call.callId === 'string').map(call => [call.callId, call]))
+  // Route each inspect RESULT to its route window (via the call that produced
+  // it) BEFORE the chronological walk, so "after inspect" is a pure seq check.
+  for (const inspectResult of inspectResults) {
+    const call = inspectResult.callId !== undefined ? inspectCallById.get(inspectResult.callId) : undefined
+    if (call === undefined) continue
+    const group = groupFor(call.seq)
+    if (group !== undefined) group.inspectResultSeqs.push({ seq: inspectResult.seq, backend: inspectResult.backend })
+  }
   for (const item of timeline) {
+    if (item.kind === 'result') continue
+    if (item.kind === 'call' && item.call.name === COMPACT_INSPECT_TOOL) {
+      if (firstInspectSeq === undefined) firstInspectSeq = item.seq
+      const view = resultViews.get(item.call.callId)
+      const group = groupFor(item.seq, view?.correlationId)
+      if (group === undefined) continue
+      group.inspectCalls += 1
+      if (group.firstInspectStep === undefined) group.firstInspectStep = item.call.step
+      const inspect = view?.inspect
+      if (inspect !== undefined) {
+        group.inspectBackends[inspect.backend] = (group.inspectBackends[inspect.backend] ?? 0) + 1
+        if (inspect.fallbackReason !== undefined) group.inspectFallbacks[inspect.fallbackReason] = (group.inspectFallbacks[inspect.fallbackReason] ?? 0) + 1
+        if (inspect.weak === true) group.inspectWeakResults += 1
+      }
+      continue
+    }
     if (item.kind === 'call' && item.call.name === COMPACT_KNOWLEDGE_TOOL) {
       const view = resultViews.get(item.call.callId)
       const group = groupFor(item.seq, view?.correlationId)
@@ -562,6 +616,26 @@ export function analyzeRecords(records) {
         }
       } else if (category === 'verification-read') group.verificationReads += 1
       else group.uncertainSearches += 1
+      // R1.5: ordering-only attribution of searches that FOLLOW an inspect
+      // result inside the same route window. The most recent preceding result
+      // lends its backend; a search with no preceding inspect counts nowhere
+      // here. Ordering is NOT causality — a discovery search after inspect is
+      // a coverage-gap signal, never proof the backend failed.
+      const priorInspect = group.inspectResultSeqs.filter(entry => entry.seq < item.seq)
+      if (priorInspect.length > 0 && (category === 'discovery-search' || category === 'verification-read')) {
+        const isDiscovery = category === 'discovery-search'
+        if (isDiscovery) {
+          group.discoveryAfterInspect += 1
+          result.searchClassification.discoveryAfterInspect += 1
+        } else {
+          group.verificationAfterInspect += 1
+          result.searchClassification.verificationAfterInspect += 1
+        }
+        const backend = priorInspect[priorInspect.length - 1].backend
+        const byBackend = result.searchAfterInspectByBackend[backend]
+          ?? (result.searchAfterInspectByBackend[backend] = { discovery: 0, verification: 0 })
+        byBackend[isDiscovery ? 'discovery' : 'verification'] += 1
+      }
     } else if (item.kind === 'call' && EDIT_TOOL_NAMES.has(item.call.name)) {
       const group = groupFor(item.seq)
       if (group !== undefined && group.editStep === undefined) group.editStep = item.call.step
@@ -569,7 +643,10 @@ export function analyzeRecords(records) {
   }
 
   result.routeGroups = groups.slice(0, MAX_ROUTE_GROUPS)
-  for (const group of result.routeGroups) delete group.knowledgeSeqs
+  for (const group of result.routeGroups) {
+    delete group.knowledgeSeqs
+    delete group.inspectResultSeqs
+  }
   result.adoption.eligibleTasks = groups.filter(group => group.knowledgeExpected).length
   result.adoption.adoptedTasks = groups.filter(group => group.knowledgeExpected && group.knowledgeCalls > 0).length
   result.adoption.missedTasks = groups.filter(group => group.knowledgeExpected && group.knowledgeCalls === 0).length
@@ -587,6 +664,9 @@ export function analyzeRecords(records) {
   }
   if (firstKnowledgeSeq !== undefined && firstDiscoverySeq !== undefined) {
     result.temporal.knowledgeBeforeSearch = firstKnowledgeSeq < firstDiscoverySeq
+  }
+  if (firstInspectSeq !== undefined && firstDiscoverySeq !== undefined) {
+    result.temporal.inspectBeforeSearch = firstInspectSeq < firstDiscoverySeq
   }
 
   result.largestToolResults.sort((a, b) => b.bytes - a.bytes)
@@ -630,7 +710,11 @@ export function formatReport(result) {
   const temporal = result.temporal
   lines.push(`temporal: knowledge@${temporal.firstKnowledgeStep ?? '-'} inspect@${temporal.firstInspectStep ?? '-'} discovery@${temporal.firstDiscoverySearchStep ?? '-'} edit@${temporal.firstEditStep ?? '-'}; knowledge-before-search: ${temporal.knowledgeBeforeSearch === undefined ? 'n/a' : temporal.knowledgeBeforeSearch ? 'yes' : 'no'}`)
   const search = result.searchClassification
-  lines.push(`search classification: ${search.searchCalls} bash search/read calls — discovery ${fmtInt(search.discoverySearches)} (after knowledge: ${fmtInt(search.discoveryAfterKnowledge)}), verification reads ${fmtInt(search.verificationReads)}, uncertain ${fmtInt(search.uncertain)}`)
+  lines.push(`search classification: ${search.searchCalls} bash search/read calls — discovery ${fmtInt(search.discoverySearches)} (after knowledge: ${fmtInt(search.discoveryAfterKnowledge)}, after inspect: ${fmtInt(search.discoveryAfterInspect)}), verification reads ${fmtInt(search.verificationReads)} (after inspect: ${fmtInt(search.verificationAfterInspect)}), uncertain ${fmtInt(search.uncertain)}`)
+  const afterInspectByBackend = Object.entries(result.searchAfterInspectByBackend)
+    .map(([backend, counts]) => `${backend}: discovery ${counts.discovery}, verification ${counts.verification}`)
+    .join('; ')
+  if (afterInspectByBackend !== '') lines.push(`  after-inspect by backend (ordering, not causality): ${afterInspectByBackend}`)
   lines.push('')
   lines.push(`tokens: input ${fmtInt(result.inputTokens)}, output ${fmtInt(result.outputTokens)}, cacheRead ${fmtInt(result.cacheReadTokens)}`)
   lines.push(`peak request context: ${fmtInt(result.peakRequestTokens)} tokens${result.peakRequestStep !== undefined ? ` (step ${result.peakRequestStep})` : ''}`)

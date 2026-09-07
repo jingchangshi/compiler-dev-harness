@@ -9,6 +9,10 @@
  *   summary.json             batch aggregate (streams + candidates [+ sessions])
  *   route-summary.json       route stream aggregate (kinds, expected, confidence)
  *   query-summary.json       query stream aggregate (commands, operational)
+ *   context-summary.json     generic context-provider aggregate (Phase R1.5:
+ *                            backend usage, fallbacks, weak/truncated/
+ *                            outside-corpus, cost — counts only; the raw
+ *                            context/*.jsonl stream is never bundled)
  *   curated-feedback/*.json  committed curated artifacts (validated again)
  *   candidate-summary.json   optional counts-only candidate aggregate
  *
@@ -37,6 +41,7 @@ function feedbackRoot() {
 const CURATED_DIR = () => feedbackRoot()
 const QUERIES_DIR = () => join(feedbackRoot(), 'queries')
 const ROUTES_DIR = () => join(feedbackRoot(), 'routes')
+const CONTEXT_DIR = () => join(feedbackRoot(), 'context')
 const CANDIDATES_DIR = () => join(feedbackRoot(), 'candidates')
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 
@@ -156,6 +161,51 @@ function queriesSummary(since) {
   return summary
 }
 
+/** Counts-only aggregate of the gitignored context stream (Phase R1.5).
+ *  Mirrors the runtime record's operational fields; never bundles the stream
+ *  itself. Malformed lines are tolerated and skipped. */
+function contextSummary(since) {
+  const summary = {
+    total: 0,
+    by_provider: {},
+    by_policy: {},
+    fallbacks: 0,
+    fallback_reasons: {},
+    weak: 0,
+    truncated: 0,
+    outside_corpus: 0,
+    total_duration_ms: 0,
+    total_result_chars: 0,
+    by_repo: {},
+    note: 'counts only — the raw context stream is never bundled',
+  }
+  const dir = CONTEXT_DIR()
+  for (const file of existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.jsonl')).sort() : []) {
+    for (const line of readFileSync(join(dir, file), 'utf8').split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      let record
+      try { record = JSON.parse(trimmed) } catch { continue }
+      if (record === null || typeof record !== 'object') continue
+      if (since !== undefined && (typeof record.ts !== 'string' || record.ts.slice(0, 10) < since)) continue
+      summary.total += 1
+      if (typeof record.provider === 'string') summary.by_provider[record.provider] = (summary.by_provider[record.provider] ?? 0) + 1
+      if (typeof record.backend_policy === 'string') summary.by_policy[record.backend_policy] = (summary.by_policy[record.backend_policy] ?? 0) + 1
+      if (typeof record.repo === 'string') summary.by_repo[record.repo] = (summary.by_repo[record.repo] ?? 0) + 1
+      if (record.fallback === true) {
+        summary.fallbacks += 1
+        if (typeof record.fallback_reason === 'string') summary.fallback_reasons[record.fallback_reason] = (summary.fallback_reasons[record.fallback_reason] ?? 0) + 1
+      }
+      if (record.weak === true) summary.weak += 1
+      if (record.truncated === true) summary.truncated += 1
+      if (Number.isInteger(record.outside_corpus)) summary.outside_corpus += record.outside_corpus
+      if (Number.isInteger(record.duration_ms)) summary.total_duration_ms += record.duration_ms
+      if (Number.isInteger(record.result_chars)) summary.total_result_chars += record.result_chars
+    }
+  }
+  return summary
+}
+
 function candidateSummary(since) {
   const summary = { total: 0, by_kind: {}, note: 'counts only — candidate documents are never bundled' }
   for (const name of existsSync(CANDIDATES_DIR()) ? readdirSync(CANDIDATES_DIR()).filter(name => name.endsWith('.json')).sort() : []) {
@@ -195,12 +245,14 @@ function exportBundle(options) {
       candidatesDir: CANDIDATES_DIR(),
       queriesDir: QUERIES_DIR(),
       routesDir: ROUTES_DIR(),
+      contextDir: CONTEXT_DIR(),
       since: options.since,
     })
     summary.privacy = { prompt_or_transcript_free: true, check: 'fail-closed key/credential/path scan passed' }
     writeJson(staging, 'summary.json', summary)
     writeJson(staging, 'route-summary.json', routesSummary(options.since))
     writeJson(staging, 'query-summary.json', queriesSummary(options.since))
+    writeJson(staging, 'context-summary.json', contextSummary(options.since))
     const curated = stageCuratedFeedback(staging, options.since)
     if (options.candidateSummary) writeJson(staging, 'candidate-summary.json', candidateSummary(options.since))
     const staged = listStaged(staging)

@@ -42,7 +42,7 @@ import { inspectCompilerRepository } from '../../compiler-inspect-driver.mjs'
 import { analyzeRecords, formatReport } from '../analyze-session.mjs'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-inspect-v3-4.cjs')
+const plugin = require('../../compiler-inspect-v3-5.cjs')
 
 const hasBin = (bin) => execFileSync('which', [bin], { encoding: 'utf8' }).trim() !== ''
 
@@ -116,13 +116,17 @@ function readLogLines(dir) {
 
 const stubEnv = (bin, extra = {}) => ({ ...process.env, RIPWIRE_BIN: bin, ...extra })
 
-test('backend policy resolution: input wins, then env, then auto', () => {
-  assert.deepEqual(resolveBackendPolicy({ backend: 'legacy' }, {}).policy, 'legacy')
-  assert.deepEqual(resolveBackendPolicy({}, { COMPILER_INSPECT_BACKEND: 'ripwire' }).policy, 'ripwire')
-  assert.deepEqual(resolveBackendPolicy({}, {}).policy, 'auto')
+test('backend policy resolution: input wins, then env, then the repository default (legacy while experimental)', () => {
+  assert.equal(resolveBackendPolicy({ backend: 'ripwire' }, {}).policy, 'ripwire')
+  assert.equal(resolveBackendPolicy({ backend: 'auto' }, {}).policy, 'auto')
+  assert.equal(resolveBackendPolicy({ backend: 'legacy' }, {}).policy, 'legacy')
+  assert.equal(resolveBackendPolicy({}, { COMPILER_INSPECT_BACKEND: 'ripwire' }).policy, 'ripwire')
+  assert.equal(resolveBackendPolicy({}, {}).policy, 'legacy', 'repository default stays legacy while Ripwire is experimental')
+  const defaultPolicy = resolveBackendPolicy({}, {})
+  assert.equal(defaultPolicy.source, 'repository-default')
   const unknown = resolveBackendPolicy({ backend: 'bogus' }, {})
-  assert.equal(unknown.policy, 'auto')
-  assert.equal(unknown.notes.length, 1, 'unknown values degrade to auto with a note')
+  assert.equal(unknown.policy, 'legacy')
+  assert.equal(unknown.notes.length, 1, 'unknown values degrade to the repository default with a note')
 })
 
 test('binary discovery uses RIPWIRE_BIN first and never probes PATH eagerly', () => {
@@ -286,10 +290,24 @@ test('provider: abort propagation maps to ripwire-timeout', { skip: !hasBin('sle
   }
 })
 
-test('seam (auto + missing binary): controlled legacy fallback with a stated reason', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+test('seam (repository default): legacy serves while Ripwire is experimental — no fallback, no attempt', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
   const root = makeRepo()
   try {
     const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: stubEnv('/no/such/ripwire-at-all') })
+    assert.equal(bundle.backend, 'legacy-rg')
+    assert.equal(bundle.fallback, false, 'the repository default is a policy choice, not a fallback')
+    assert.equal(bundle.fallback_reason, null)
+    assert.ok(bundle.definitions.length > 0, 'legacy retrieval actually served the bundle')
+    assert.equal(bundle.source_context, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('seam (explicit auto + missing binary): controlled legacy fallback with a stated reason', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+  const root = makeRepo()
+  try {
+    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], backend: 'auto' }, undefined, { env: stubEnv('/no/such/ripwire-at-all') })
     assert.equal(bundle.backend, 'legacy-rg')
     assert.equal(bundle.fallback, true)
     assert.equal(bundle.fallback_reason, FALLBACK_REASONS.NOT_FOUND)
@@ -300,12 +318,12 @@ test('seam (auto + missing binary): controlled legacy fallback with a stated rea
   }
 })
 
-test('seam (auto + ripwire usable): source_context serves and legacy sections stay empty', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+test('seam (explicit auto + ripwire usable): source_context serves and legacy sections stay empty', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ripwire-bin-'))
   const root = makeRepo()
   try {
     const bin = makeStubBin(dir)
-    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass' }, undefined, { env: stubEnv(bin), logDir: makeLogDir() })
+    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass', backend: 'auto' }, undefined, { env: stubEnv(bin), logDir: makeLogDir() })
     assert.equal(bundle.backend, 'ripwire')
     assert.equal(bundle.fallback, false)
     assert.equal(bundle.fallback_reason, null)
@@ -318,12 +336,12 @@ test('seam (auto + ripwire usable): source_context serves and legacy sections st
   }
 })
 
-test('seam (auto + weak result): falls back and never reads as semantic absence', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+test('seam (explicit auto + weak result): falls back and never reads as semantic absence', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ripwire-bin-'))
   const root = makeRepo()
   try {
     const bin = makeStubBin(dir)
-    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: stubEnv(bin, { STUB_EMPTY_RANKING: '1' }) })
+    const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], backend: 'auto' }, undefined, { env: stubEnv(bin, { STUB_EMPTY_RANKING: '1' }) })
     assert.equal(bundle.backend, 'legacy-rg')
     assert.equal(bundle.fallback, true)
     assert.equal(bundle.fallback_reason, FALLBACK_REASONS.WEAK_RESULT)
@@ -386,7 +404,7 @@ test('seam: MLIR log forensics is unchanged under the ripwire backend', { skip: 
     const bin = makeStubBin(dir)
     writeFileSync(join(root, 'pipeline.log'), '// -----// IR Dump After AlphaPass (alpha-pass) //-----\n%0 = alpha.op\n')
     const bundle = await inspectCompilerRepository({
-      repo_root: root, symbols: ['FooPass'], task: 'understand FooPass',
+      repo_root: root, symbols: ['FooPass'], task: 'understand FooPass', backend: 'auto',
       log_files: ['pipeline.log'], log_passes: ['AlphaPass'],
     }, undefined, { env: stubEnv(bin) })
     assert.equal(bundle.backend, 'ripwire')
@@ -426,12 +444,12 @@ test('plugin contract: rendered bundle names the backend and the epistemic bound
     const registered = []
     plugin.apply({ systemPrompt: { section() {} }, tools: { register(tool) { registered.push(tool) } } })
     const tool = registered.find(entry => entry.name === 'compiler_inspect')
-    const bundle = await tool.execute({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass' }, { signal: new AbortController().signal })
+    const bundle = await tool.execute({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass', backend: 'ripwire' }, { signal: new AbortController().signal })
     const rendered = tool.output.render({}, bundle)[0].text
     assert.ok(rendered.includes('Context backend: ripwire (fallback: none)'), `backend line must render, got: ${rendered.split('\n').slice(0, 8).join(' | ')}`)
     assert.ok(rendered.includes('NOT an mlir-repomap semantic fact'), 'the epistemic boundary must be stated')
     assert.ok(rendered.length <= bundle.budget.total_budget_chars + 400, 'the rendered bundle respects the strict total budget')
-    assert.equal(bundle.budget.version, '1.3')
+    assert.equal(bundle.budget.version, '1.4')
   } finally {
     if (previousBin === undefined) delete process.env.RIPWIRE_BIN
     else process.env.RIPWIRE_BIN = previousBin
@@ -446,8 +464,8 @@ test('observation: one non-sensitive line per attempt with correlation id and vi
   const logDir = makeLogDir()
   try {
     const bin = makeStubBin(dir)
-    await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass with BODYMARK inside' }, undefined, { env: stubEnv(bin), logDir, correlationId: 'ktest1234abcdef' })
-    await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'] }, undefined, { env: stubEnv('/no/such/ripwire-at-all'), logDir, correlationId: 'ktest1234abcdef' })
+    await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass with BODYMARK inside', backend: 'auto' }, undefined, { env: stubEnv(bin), logDir, correlationId: 'ktest1234abcdef' })
+    await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], backend: 'auto' }, undefined, { env: stubEnv('/no/such/ripwire-at-all'), logDir, correlationId: 'ktest1234abcdef' })
     const lines = readLogLines(logDir)
     assert.equal(lines.length, 2, 'exactly one observation line per source-retrieval attempt')
     const ripwireLine = lines[0]

@@ -201,5 +201,5 @@ test('report renders the phase-2 observation lines', () => {
   assert.match(report, /route kinds: pass-review: 1, pipeline-audit: 1, single-file-edit: 1/)
   assert.match(report, /adoption: eligible 2, adopted 1, missed 1/)
   assert.match(report, /knowledge-before-search: yes/)
-  assert.match(report, /discovery 1 \(after knowledge: 0\), verification reads 1, uncertain 1/)
+  assert.match(report, /discovery 1 \(after knowledge: 0, after inspect: 0\), verification reads 1 \(after inspect: 0\), uncertain 1/)
 })

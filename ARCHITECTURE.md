@@ -23,8 +23,8 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 |---|---|
 | `preset.yml` | preset 元数据(name/description) |
 | `agent.cordis.yml` | **agent-plane 组成**:挂载哪些插件/工具/提示段(第 2 章) |
-| `compiler-inspect-v3-4.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章;v3-3 = output schema 改用当前 harness 支持的 oneOf nullable 形式;v3-4 = Phase R1 backend policy) |
-| `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章;v1.3 起含 CodeContextProvider 接缝) |
+| `compiler-inspect-v3-5.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章;v3-3 = output schema 兼容修正;v3-4 = Phase R1 backend policy;v3-5 = Phase R1.5 rollout 默认 legacy) |
+| `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章;v1.3 起含 CodeContextProvider 接缝,v1.4 = rollout 默认) |
 | `compiler-context-backend.mjs` | Ripwire 通用上下文后端(第 14 章) |
 | `compiler-observation-state.mjs` | per-agent correlation id 共享注册表(第 14.5 节) |
 | `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
@@ -70,13 +70,13 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 | plan mode | group(isolate `planMode`)+ `plan-mode`(完整 plan-mode 提示段:先探索后计划、计划 decision-complete、`exit_plan_mode` 收口等) | 计划状态天然 per-agent |
 | compaction | group(isolate `compaction` + `toolResultPruner`)+ `compaction-basic`(**实验性早期压缩策略**,见第 7 章)+ `command-compact` + `tool-result-pruner`(8192/4096/1024) | `tokenMeter` 留在 host;pruner 必须与 compaction-basic 同 realm(经 `ctx.get` 读取) |
 | delegation | group(isolate `workflowEngine`)+ `tool-subagent`(spawn,continuable)、`tool-subagent-fork`(fork,continuable)、`tool-subagent-list-agents`、`workflow-worker-thread`(provider spawn)、`tool-workflow`、`tool-ralph`(maxRounds 64);codex/claude-code 子代理行**存在但 disabled**(需安装对应 Bundle) | subagents 注册表留在 host;`tool-subagent-report` 是 host-plane(continuable setup 单例) |
-| compiler | `compiler-inspect` → `./compiler-inspect-v3-3.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
+| compiler | `compiler-inspect` → `./compiler-inspect-v3-5.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
 | 其余 | `tool-ask-user`、`tool-todo`(`allowParallelInProgress: true`)、`tool-web`(`fetch: false`,`searchTimeoutMs: 60000`) | web 服务与搜索 provider 在 host |
 
 **Preset 明确不挂载**:LSP、hooks、notebook/view 等非标准工具;web fetch 被关闭(仅保留 search)。
 条件禁用走 `!!js` 表达式(仅 shell 两行,按平台二选一)。
 
-## 3. compiler-inspect 插件(compiler-inspect-v3-3.cjs)
+## 3. compiler-inspect 插件(compiler-inspect-v3-5.cjs)
 
 `exports.name = 'compiler-inspect'`,`exports.inject = ['tools', 'systemPrompt']`。`apply(ctx)` 做两件事:
 
@@ -114,7 +114,7 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 > 命名澄清:文件名 `v3-3` 是插件文件的演进代号(v3-3 仅将 output schema 的 type 数组改为当前 harness 支持的 `oneOf` nullable 形式,行为不变);driver 内 `VERSION = '1.2'` 是检索协议版本,
 > README 与工具描述均称 v1.2。两套编号并存,勿混淆。
 
-### 3.3 compiler-knowledge 插件(compiler-knowledge-v2.cjs)
+### 3.3 compiler-knowledge 插件(compiler-knowledge-v3.cjs)
 
 `exports.name = 'compiler-knowledge'`,`exports.inject = ['tools', 'systemPrompt']`。归属与
 compiler-inspect 相同:只注册 model-facing 工具与提示段,不发布服务,无 realm。包含:
@@ -258,8 +258,9 @@ compaction 启停/错误数、per-turn 明细。
 ## 9. 运维细节(热更新)
 
 - host 进程按文件 URL 缓存 preset 插件模块,生存期为进程生命周期:
-  - 改 `compiler-inspect-v3-3.cjs` → **重命名文件**并同步组成行;
+  - 改 `compiler-inspect-v3-5.cjs` → **重命名文件**并同步组成行;
   - 改 `compiler-inspect-driver.mjs` → **bump 插件 import 的 `?v=` 查询**;
+  - 改 `compiler-context-backend.mjs` → **bump 驱动内该模块 import 的 `?v=` 查询**;
   - 组成 YAML(行、config、skill 目录)每次会话挂载时重读,无需重启。
 
 ## 10. 设计不变量汇总(下游 AI 的"不可违背清单")
@@ -413,7 +414,7 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
    工具域,留在 Compiler Dev 会话合规;只有修改 DeepSeek Harness/Cordis/DSH Web 时才触发 Creator-mode
    移交。
 6. **policy/skill 文本的更新落点**:若采纳路由方案,需同步改三处且保持不重复——核心策略
-   (compiler-inspect-v3-3.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
+   (compiler-inspect-v3-5.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
    (skills/compiler-development/SKILL.md)、以及目标仓库契约;harness 侧 conventions.md 是其仓库的
    事实源,preset 侧不应复制其内容。
 
@@ -438,7 +439,7 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
 ### 13.1 分层事实(仍遵守第 10 章不变量)
 
 ```text
-Agent Workflow(路由 + 查询 + 源码工作)          ← preset/compiler-knowledge-v2.cjs
+Agent Workflow(路由 + 查询 + 源码工作)          ← preset/compiler-knowledge-v3.cjs
 Observation Plane(去敏 JSONL 流,gitignored)    ← driver 自动追加
 Offline Plane(分析 / 候选 / 审核 / 汇总 / 导出) ← scripts/*.mjs,Node-only
 Feedback Contract(协议与校验器)                ← mlir-compiler-harness(唯一事实源)
@@ -610,7 +611,7 @@ correlation id(`compiler-observation-state.mjs`,进程内 Map,opaque id),无任�
 | `compiler-context-backend.mjs` | **新增**:CodeContextProvider(发现/生成/规范化/预算/观测) |
 | `compiler-observation-state.mjs` | **新增**:per-agent correlation id 共享注册表 |
 | `compiler-inspect-driver.mjs` | v1.3:backend policy + provider 分支 + 新输出字段 + 观测 |
-| `compiler-inspect-v3-4.cjs` | 由 v3-3 改名+扩展:schema/renderer/240s guard/`?v=1.3` |
+| `compiler-inspect-v3-5.cjs` | 由 v3-3 改名扩展(R1:schema/renderer/240s guard;R1.5 rollout 默认随之再改名):schema/renderer/240s guard/`?v=1.4` |
 | `compiler-knowledge-v3.cjs` | 由 v2 改名:route 铸造 id 时同步发布到共享观测状态 |
 | `agent.cordis.yml` | 两行指向新插件文件名 |
 | `scripts/analyze-session.mjs` | backend 分解 / fallback 原因 / weak 计数 |
@@ -618,15 +619,112 @@ correlation id(`compiler-observation-state.mjs`,进程内 Map,opaque id),无任�
 
 ---
 
+## 15. Phase R1.5:Production Canary 与晋升证据闭环(2026-09-07 已实现)
+
+> R1.5 不改两个引擎,只加强 compiler-dev-harness 的**观测与发布平面**:把 R1 的
+> "Ripwire 技术上可用"推进到"拥有可复核的生产证据通道"。
+
+### 15.1 Rollout 语义(Workstream A:诚实实验态)
+
+```text
+input backend  >  COMPILER_INSPECT_BACKEND  >  REPOSITORY_DEFAULT_BACKEND_POLICY
+(显式实验)        (显式 A/B)                    (仓库默认 = legacy,实验期内不变)
+```
+
+- R1 的矛盾已消除:此前 `auto` 是缺省,装上二进制即切流量,与 `KEEP_RIPWIRE_EXPERIMENTAL` 相悖。
+  现在仓库默认是 **legacy**;`ripwire` = 显式实验;`auto` = 显式能力型 A/B 实验
+  (Ripwire 可用即用、失败受控回退)。后文常量 `REPOSITORY_DEFAULT_BACKEND_POLICY`
+  (compiler-context-backend.mjs)即晋升开关:**晋升 = 一次经评审的默认值变更**,绝不是安装二进制。
+- 无百分比灰度、无随机路由、无模型/身份参与分配;每次调用的实际 backend 与 fallback 原因
+  在结果、渲染文本与观测流三处始终可见。驱动 VERSION 1.3→1.4(默认值属检索协议行为)。
+
+### 15.2 证据闭环数据流
+
+```text
+Production Task
+      |
+      v
+compiler_route
+      |
+      +---- compiler_knowledge
+      |
+      +---- compiler_inspect
+                |
+                +-- experimental backend policy (default legacy; ripwire/auto explicit)
+                |
+                +-- context observation (analysis/feedback/context/, counts only)
+      |
+      v
+session analyzer
+      |
+      +-- discovery-after-knowledge
+      +-- discovery-after-inspect      (ordering only, never causality)
+      +-- verification-after-inspect
+      +-- backend / fallback / weak (session- and route-level)
+      |
+      v
+counts-only summary (summarize-feedback --context)
+      |
+      v
+context-summary.json (bundle export; raw stream never ships)
+      |
+      v
+evaluate-context-backend.mjs (per-provider objective metrics, observational)
+      |
+      v
+human promotion review
+```
+
+**明确声明:无自动晋升;无语义图写入;无自动 R2 触发。** 评述比较是观测性的
+(会话不是受控实验);配对比较刻意不实现(拒绝从 prompt 猜配对)。
+
+### 15.3 分析器新增语义(Workstream C)
+
+- `discovery-after-inspect`:同一 route 窗口内,一条 discovery 搜索发生在某 `compiler_inspect`
+  结果之后(按 seq 排序,归属最近一次结果的 backend)。**只表示时序**,不表示 Ripwire 失败;
+  与 `discovery-after-knowledge` 同为 coverage-gap 信号。
+- `verification-after-inspect`:同一窗口内,指向 inspect 已返回文件的验证读取发生在结果之后
+  —— 通常是证据被使用的正面信号。
+- route 组新增:`inspectCalls / inspectBackends / inspectFallbacks / inspectWeakResults /
+  firstInspectStep / discoveryAfterInspect / verificationAfterInspect`;会话级新增
+  `searchAfterInspectByBackend`(按最近先行结果归属)。uncertain 搜索永不进入 after-inspect 计数;
+  无 route 声明的 inspect 调用诚实保持 ungrouped;旧会话无 Context backend 行 → 零/未知,不回填。
+
+### 15.4 汇总与导出(Workstream D/E)
+
+- `summarize-feedback.mjs`:`--context <dir>`;新增 `context` 节(total/by_provider/by_policy/
+  fallbacks/fallback_reasons/weak/truncated/outside_corpus/total_duration_ms/total_result_chars)
+  与 `search.discovery_after_inspect / verification_after_inspect`;依旧 counts-only。
+- `export-feedback-bundle.mjs`:新增 counts-only `context-summary.json`;**原始 context/*.jsonl
+  永不入包**;manifest 自动列出;既有 fail-closed 隐私扫描覆盖全部暂存文件。
+
+### 15.5 晋升门槛(文档化,不自动执行)
+
+- **候选晋升**:足够数量的真实编译任务上——回退率与弱结果率低;语料排除在契约下受控;
+  上下文/工具体积无明显回归;discovery-after-inspect 不劣于 legacy 且趋于更低;
+  无反复的必备符号/文件检索缺失;无正确性或工作流回归。
+- **维持实验**:样本不足;Ripwire/legacy 互有胜负;反复回退;大量截断;discovery 未见减少。
+- **拒绝**:系统性缺失实现上下文;不可接受的延迟/资源;持续性语料不兼容;工作流质量退化。
+  不设无证据的数值阈值;判定由人复核。
+
+### 15.6 离线评述工具(Workstream F)
+
+`scripts/evaluate-context-backend.mjs --sessions <log...> [--context <dir>] [--since] [--output]`:
+按 provider 输出 objective counts(调用/回退/弱/截断/外语料、时延/体积、discovery-after-inspect、
+首检先于首编辑等),自带诚实性声明(观测性比较、无因果、无评分、无决定)。
+
+---
+
 ### 附录:事实来源
 
-- Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-4.cjs`、`compiler-inspect-driver.mjs`(v1.3)、
-  `compiler-context-backend.mjs`、`compiler-observation-state.mjs`、
+- Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-5.cjs`、`compiler-inspect-driver.mjs`(v1.4)、
+  `compiler-context-backend.mjs`(v1.1,含 rollout 默认常量)、`compiler-observation-state.mjs`、
   `compiler-knowledge-v3.cjs`(`compiler_route` + `compiler_knowledge` + 路由段)、`compiler-knowledge-driver.mjs`
   (v2.0,correlation/diagnostics/truncation 标注)、`skills/compiler-development/SKILL.md`、
-  `REPOSITORY_CONTRACT_TEMPLATE.md`、`scripts/analyze-session.mjs`、`scripts/{feedback-schema,collect-feedback,
-  review-feedback,summarize-feedback,export-feedback-bundle,regression-cases}.mjs`、`scripts/test/`
-  (5 个测试文件 + fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
+  `REPOSITORY_CONTRACT_TEMPLATE.md`(R1.5 增 source-context exclusions)、`scripts/analyze-session.mjs`、
+  `scripts/{feedback-schema,collect-feedback,review-feedback,summarize-feedback,export-feedback-bundle,
+  regression-cases,evaluate-context-backend}.mjs`、`scripts/test/`
+  (6 个测试文件 + fixtures)、`analysis/case-baseline.json`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
   (案例反馈分析报告,v1.2 改动的依据)、`analysis/2026-09-07-knowledge-integration-validation.md`、
   `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)。Phase R1 的实现依据另见
   上游 `redhat-et/ripwire`(c7914e8dc8429a318ffe24f857077e2b1d52d62e)`src/packtask.h`、`src/ingest.h`、
