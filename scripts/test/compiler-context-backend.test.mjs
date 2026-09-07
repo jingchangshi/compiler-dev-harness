@@ -356,7 +356,8 @@ test('seam (explicit ripwire + failure): degraded result, NEVER a silent legacy 
   const root = makeRepo()
   try {
     const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], backend: 'ripwire' }, undefined, { env: stubEnv('/no/such/ripwire-at-all') })
-    assert.equal(bundle.backend, 'ripwire')
+    assert.equal(bundle.backend, 'none', 'nothing served when the explicit Ripwire request fails (R1.6)')
+    assert.equal(bundle.delivery_state, 'degraded')
     assert.equal(bundle.fallback, false, 'explicit ripwire failure must not count as a legacy fallback')
     assert.equal(bundle.source_context.degraded, true)
     assert.equal(bundle.source_context.error, FALLBACK_REASONS.NOT_FOUND)
@@ -425,8 +426,9 @@ test('plugin contract: schema declares the backend policy and new output fields'
   assert.deepEqual(inputProps.backend.enum, ['auto', 'ripwire', 'legacy'])
   assert.ok(inputProps.task, 'the optional task phrase is declared')
   const out = tool.output.schema
-  assert.deepEqual(out.properties.backend.enum, ['ripwire', 'legacy-rg'])
-  assert.ok(out.required.includes('backend') && out.required.includes('fallback') && out.required.includes('fallback_reason'))
+  assert.deepEqual(out.properties.backend.enum, ['ripwire', 'legacy-rg', 'none'])
+  assert.deepEqual(out.properties.delivery_state.enum, ['served', 'fallback', 'degraded'])
+  assert.ok(out.required.includes('backend') && out.required.includes('delivery_state') && out.required.includes('fallback') && out.required.includes('fallback_reason'))
   assert.ok(out.required.includes('source_context') && out.required.includes('source_disclosures'))
   // The legacy contract fields all remain required and present.
   for (const key of ['repository', 'anchors', 'definitions', 'references', 'tests', 'changes', 'history', 'logs', 'unresolved', 'budget']) {
@@ -447,9 +449,10 @@ test('plugin contract: rendered bundle names the backend and the epistemic bound
     const bundle = await tool.execute({ repo_root: root, symbols: ['FooPass'], task: 'understand FooPass', backend: 'ripwire' }, { signal: new AbortController().signal })
     const rendered = tool.output.render({}, bundle)[0].text
     assert.ok(rendered.includes('Context backend: ripwire (fallback: none)'), `backend line must render, got: ${rendered.split('\n').slice(0, 8).join(' | ')}`)
+    assert.ok(rendered.includes('delivery=served'), 'the delivery state must render')
     assert.ok(rendered.includes('NOT an mlir-repomap semantic fact'), 'the epistemic boundary must be stated')
     assert.ok(rendered.length <= bundle.budget.total_budget_chars + 400, 'the rendered bundle respects the strict total budget')
-    assert.equal(bundle.budget.version, '1.4')
+    assert.equal(bundle.budget.version, '1.5')
   } finally {
     if (previousBin === undefined) delete process.env.RIPWIRE_BIN
     else process.env.RIPWIRE_BIN = previousBin
@@ -458,7 +461,7 @@ test('plugin contract: rendered bundle names the backend and the epistemic bound
   }
 })
 
-test('observation: one non-sensitive line per attempt with correlation id and visible fallback', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
+test('observation (protocol v2): one line per attempt with attempts, served provider, and delivery state', { skip: !hasBin('git') || !hasBin('rg') }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ripwire-bin-'))
   const root = makeRepo()
   const logDir = makeLogDir()
@@ -468,16 +471,26 @@ test('observation: one non-sensitive line per attempt with correlation id and vi
     await inspectCompilerRepository({ repo_root: root, symbols: ['FooPass'], backend: 'auto' }, undefined, { env: stubEnv('/no/such/ripwire-at-all'), logDir, correlationId: 'ktest1234abcdef' })
     const lines = readLogLines(logDir)
     assert.equal(lines.length, 2, 'exactly one observation line per source-retrieval attempt')
-    const ripwireLine = lines[0]
-    assert.equal(ripwireLine.provider, 'ripwire')
-    assert.equal(ripwireLine.mode, 'pack-task')
-    assert.equal(ripwireLine.correlation_id, 'ktest1234abcdef')
-    assert.equal(ripwireLine.fallback, false)
-    assert.equal(ripwireLine.backend_policy, 'auto')
+    for (const line of lines) assert.equal(line.schema_version, 2, 'runtime writes protocol v2')
+    const servedLine = lines[0]
+    assert.equal(servedLine.correlation_id, 'ktest1234abcdef')
+    assert.equal(servedLine.backend_policy, 'auto')
+    assert.equal(servedLine.served_provider, 'ripwire')
+    assert.equal(servedLine.delivery_state, 'served')
+    assert.equal(servedLine.attempts.length, 1)
+    assert.equal(servedLine.attempts[0].provider, 'ripwire')
+    assert.equal(servedLine.attempts[0].outcome, 'served')
+    assert.ok(Number.isInteger(servedLine.attempts[0].duration_ms), 'the attempt duration is a provider-boundary fact')
+    assert.ok(Number.isInteger(servedLine.total_duration_ms), 'the whole-call duration is separate')
     const fallbackLine = lines[1]
-    assert.equal(fallbackLine.provider, 'legacy-rg')
-    assert.equal(fallbackLine.fallback, true)
-    assert.equal(fallbackLine.fallback_reason, FALLBACK_REASONS.NOT_FOUND)
+    assert.equal(fallbackLine.served_provider, 'legacy-rg')
+    assert.equal(fallbackLine.delivery_state, 'fallback')
+    assert.equal(fallbackLine.attempts.length, 2, 'the failed Ripwire attempt AND the served legacy attempt are both recorded')
+    assert.equal(fallbackLine.attempts[0].provider, 'ripwire')
+    assert.equal(fallbackLine.attempts[0].outcome, 'not-found')
+    assert.equal(fallbackLine.attempts[1].provider, 'legacy-rg')
+    assert.equal(fallbackLine.attempts[1].outcome, 'served')
+    assert.ok(Number.isInteger(fallbackLine.attempts[1].duration_ms), 'the legacy attempt duration is a provider-boundary fact')
     for (const line of lines) {
       const raw = JSON.stringify(line)
       assert.ok(!raw.includes('BODYMARK'), 'no source/body text is recorded')

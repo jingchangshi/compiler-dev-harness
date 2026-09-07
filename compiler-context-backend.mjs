@@ -42,11 +42,31 @@ import { existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const VERSION = '1.1'
+export const VERSION = '1.2'
 export const MODE = 'pack-task'
 export const BACKEND_RIPWIRE = 'ripwire'
 export const BACKEND_LEGACY = 'legacy-rg'
 export const BACKEND_POLICIES = ['auto', 'ripwire', 'legacy']
+/** Served-provider value when nothing served (explicit-ripwire degraded result). */
+export const BACKEND_NONE = 'none'
+
+/**
+ * Context Observation Protocol version (Phase R1.6). v2 records carry the
+ * requested policy, the ordered per-provider ATTEMPTS (each with a finite
+ * outcome), the SERVED provider, and the delivery state as independent facts —
+ * an auto→Ripwire-failure→legacy-fallback call is one Ripwire attempt failure
+ * plus one legacy served delivery, never a "legacy failure". v1 records (R1 /
+ * R1.5) remain readable offline through normalizeContextObservation().
+ */
+export const CONTEXT_OBSERVATION_SCHEMA_VERSION = 2
+
+/**
+ * Finite delivery states (R1.6 §9): what the Agent actually received.
+ *  - served:   the requested/successful provider supplied the context
+ *  - fallback: an attempt failed or came back weak and legacy supplied it
+ *  - degraded: the explicit request failed and NOTHING served
+ */
+export const DELIVERY_STATES = ['served', 'fallback', 'degraded']
 
 /**
  * The repository's stable default backend policy (Phase R1.5, Workstream A).
@@ -72,6 +92,23 @@ export const FALLBACK_REASONS = {
   TIMEOUT: 'ripwire-timeout',
   WEAK_RESULT: 'ripwire-weak-result',
   POLICY_LEGACY: 'backend-policy-legacy',
+}
+
+/**
+ * Finite provider-attempt outcomes (R1.6 §8), reusing the fallback-reason
+ * vocabulary so there is ONE failure taxonomy, not two. Arbitrary stderr is
+ * never an outcome.
+ */
+export const ATTEMPT_OUTCOMES = ['served', 'weak', 'error', 'timeout', 'invalid-output', 'not-found']
+const OUTCOME_BY_REASON = {
+  [FALLBACK_REASONS.NOT_FOUND]: 'not-found',
+  [FALLBACK_REASONS.INVOCATION_FAILED]: 'error',
+  [FALLBACK_REASONS.INVALID_OUTPUT]: 'invalid-output',
+  [FALLBACK_REASONS.TIMEOUT]: 'timeout',
+  [FALLBACK_REASONS.WEAK_RESULT]: 'weak',
+}
+export function outcomeForReason(reason) {
+  return OUTCOME_BY_REASON[reason] ?? null
 }
 
 // ── budget mapping (goal §15) ───────────────────────────────────────────────
@@ -501,26 +538,143 @@ export function logContextRecord(record, logDir) {
  * §16). Counts and categories only: no task prose, no anchors' paths, no
  * source bodies, no raw Ripwire output, no stderr, no personal paths.
  */
-export function contextObservationRecord({ ts = new Date().toISOString(), correlationId, policy, backend, fallback, fallbackReason, durationMs, resultChars, truncated, weak, repoRoot, fileCount, symbolCount, rankedCount, bodyCount, testCount, outsideCorpusCount }) {
+/**
+ * Build one Context Observation Protocol v2 record (R1.6 §6–§9). The four
+ * layers are independent facts: the REQUESTED policy, the ordered provider
+ * ATTEMPTS (each with a finite outcome), what was actually SERVED, and the
+ * delivery state. An auto→Ripwire-failure→legacy-fallback call is one Ripwire
+ * attempt failure plus one legacy served delivery — never a "legacy failure".
+ *
+ * Cost semantics (R1.6 §12): `attempt.duration_ms` times ONE provider
+ * boundary only (Ripwire: the pack-task subprocess; legacy: its rg collection
+ * block). `total_duration_ms` is the whole compiler_inspect call (git state,
+ * history, diff, log forensics, rendering/bounding included). The two are
+ * never summed into one attribution.
+ *
+ * Size semantics (R1.6 §13): `attempt.result_chars` is the provider-boundary
+ * output (Ripwire: raw `--json` stdout; legacy: the rendered bundle it filled).
+ * `delivery_result_chars` is the final rendered tool-result size — the only
+ * cross-provider comparable figure. Both are labeled, never mixed.
+ *
+ * Non-sensitive by construction: finite enums, counts, durations, sizes, the
+ * repository basename, and the opaque correlation id. Best-effort write.
+ */
+export function contextObservationRecord({ ts = new Date().toISOString(), correlationId, policy, attempts = [], servedProvider, deliveryState, totalDurationMs, deliveryResultChars, weak, truncated, repoRoot, fileCount, symbolCount, rankedCount, bodyCount, testCount, outsideCorpusCount }) {
   const record = {
+    schema_version: CONTEXT_OBSERVATION_SCHEMA_VERSION,
     ts,
     correlation_id: correlationId,
     backend_policy: policy,
-    provider: backend,
-    mode: backend === BACKEND_RIPWIRE ? MODE : 'legacy',
-    duration_ms: durationMs,
-    result_chars: resultChars,
-    truncated: truncated === true,
+    attempts: attempts.map(attempt => compact({
+      provider: attempt.provider,
+      outcome: attempt.outcome,
+      reason: attempt.reason,
+      duration_ms: attempt.duration_ms,
+      result_chars: attempt.result_chars,
+      weak: attempt.weak === true ? true : undefined,
+      truncated: attempt.truncated === true ? true : undefined,
+    })),
+    served_provider: servedProvider ?? null,
+    delivery_state: deliveryState,
+    total_duration_ms: totalDurationMs,
+    delivery_result_chars: deliveryResultChars,
     weak: weak === true,
-    fallback: fallback === true,
-    fallback_reason: fallbackReason ?? null,
+    truncated: truncated === true,
     repo: basename(repoRoot ?? ''),
     file_count: fileCount,
     symbol_count: symbolCount,
-    ranked_symbols: rankedCount,
-    bodies: bodyCount,
-    tests: testCount,
     outside_corpus: outsideCorpusCount,
   }
+  // Delivered-context shape counts ride only when a provider actually served.
+  if (servedProvider !== null && servedProvider !== undefined) {
+    if (rankedCount !== undefined) record.ranked_symbols = rankedCount
+    if (bodyCount !== undefined) record.bodies = bodyCount
+    if (testCount !== undefined) record.tests = testCount
+  }
   return record
+}
+
+/**
+ * Offline normalization of any historical context observation into the logical
+ * v2 shape (R1.6 §14). v2 records pass through; v1 records are recovered where
+ * the existing finite fields justify inference and left `unknown` where they do
+ * not. Never fabricates: a v1 fallback record yields the implied Ripwire
+ * attempt (outcome only — its duration/size were never recorded), and a v1
+ * fallback record without a Ripwire reason yields NO attempts at all.
+ * Historical files are never rewritten; this runs in the aggregation/evaluation
+ * tooling only.
+ */
+export function normalizeContextObservation(record) {
+  if (record === null || typeof record !== 'object') return null
+  if (record.schema_version === 2) return record
+  const policy = typeof record.backend_policy === 'string' ? record.backend_policy : 'unknown'
+  const provider = typeof record.provider === 'string' ? record.provider : null
+  const weak = record.weak === true
+  const truncated = record.truncated === true
+  const fallback = record.fallback === true
+  const reason = typeof record.fallback_reason === 'string' ? record.fallback_reason : null
+  let attempts = []
+  let servedProvider = provider
+  let deliveryState = 'served'
+  // v1 result_chars semantics: provider-boundary chars when Ripwire served,
+  // final rendered chars when legacy served — only the latter is a delivery size.
+  let deliveryResultChars = provider === BACKEND_LEGACY ? record.result_chars : undefined
+  if (fallback) {
+    deliveryState = 'fallback'
+    const outcome = reason !== null ? outcomeForReason(reason) : null
+    if (outcome !== null) {
+      attempts = [
+        compact({ provider: BACKEND_RIPWIRE, outcome, reason, weak: outcome === 'weak' ? true : undefined }),
+        compact({ provider: BACKEND_LEGACY, outcome: 'served', weak: weak === true ? true : undefined, truncated: truncated === true ? true : undefined, result_chars: typeof record.result_chars === 'number' ? record.result_chars : undefined }),
+      ]
+    } else {
+      // Ambiguous v1 fallback (no Ripwire reason): attempts stay unknown.
+      attempts = []
+      servedProvider = provider
+    }
+  } else if (provider === BACKEND_RIPWIRE) {
+    attempts = [compact({
+      provider: BACKEND_RIPWIRE,
+      outcome: weak === true ? 'weak' : 'served',
+      duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
+      result_chars: typeof record.result_chars === 'number' ? record.result_chars : undefined,
+      weak: weak === true ? true : undefined,
+      truncated: truncated === true ? true : undefined,
+    })]
+    deliveryResultChars = undefined   // v1 recorded provider JSON size here, not the delivery size
+  } else if (provider === BACKEND_LEGACY) {
+    attempts = [compact({
+      provider: BACKEND_LEGACY,
+      outcome: 'served',
+      duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
+      result_chars: typeof record.result_chars === 'number' ? record.result_chars : undefined,
+      weak: weak === true ? true : undefined,
+      truncated: truncated === true ? true : undefined,
+    })]
+  } else {
+    attempts = []
+    servedProvider = null
+    deliveryState = 'served'
+  }
+  const normalized = {
+    schema_version: 1,   // logical level recovered FROM a v1 record
+    ts: record.ts,
+    correlation_id: record.correlation_id,
+    backend_policy: policy,
+    attempts,
+    served_provider: servedProvider ?? null,
+    delivery_state: deliveryState,
+    total_duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
+    delivery_result_chars: deliveryResultChars,
+    weak: weak,
+    truncated: truncated,
+    repo: record.repo,
+    file_count: record.file_count,
+    symbol_count: record.symbol_count,
+    outside_corpus: record.outside_corpus,
+    ranked_symbols: provider !== null ? record.ranked_symbols : undefined,
+    bodies: provider !== null ? record.bodies : undefined,
+    tests: provider !== null ? record.tests : undefined,
+  }
+  return compact(normalized)
 }

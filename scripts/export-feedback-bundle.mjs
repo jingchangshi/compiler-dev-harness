@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { basename, join, relative, resolve } from 'node:path'
-import { aggregate } from './summarize-feedback.mjs'
+import { aggregate, summarizeContextRecords } from './summarize-feedback.mjs'
 import { validateFeedback } from './feedback-schema.mjs'
 
 const DEFAULT_ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -161,24 +161,11 @@ function queriesSummary(since) {
   return summary
 }
 
-/** Counts-only aggregate of the gitignored context stream (Phase R1.5).
- *  Mirrors the runtime record's operational fields; never bundles the stream
- *  itself. Malformed lines are tolerated and skipped. */
+/** Counts-only aggregate of the gitignored context stream (Phase R1.6).
+ *  Records are normalized to the logical v2 shape (attempt/delivery split);
+ *  the raw stream itself is never bundled. Malformed lines are skipped. */
 function contextSummary(since) {
-  const summary = {
-    total: 0,
-    by_provider: {},
-    by_policy: {},
-    fallbacks: 0,
-    fallback_reasons: {},
-    weak: 0,
-    truncated: 0,
-    outside_corpus: 0,
-    total_duration_ms: 0,
-    total_result_chars: 0,
-    by_repo: {},
-    note: 'counts only — the raw context stream is never bundled',
-  }
+  const records = []
   const dir = CONTEXT_DIR()
   for (const file of existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.jsonl')).sort() : []) {
     for (const line of readFileSync(join(dir, file), 'utf8').split('\n')) {
@@ -188,22 +175,10 @@ function contextSummary(since) {
       try { record = JSON.parse(trimmed) } catch { continue }
       if (record === null || typeof record !== 'object') continue
       if (since !== undefined && (typeof record.ts !== 'string' || record.ts.slice(0, 10) < since)) continue
-      summary.total += 1
-      if (typeof record.provider === 'string') summary.by_provider[record.provider] = (summary.by_provider[record.provider] ?? 0) + 1
-      if (typeof record.backend_policy === 'string') summary.by_policy[record.backend_policy] = (summary.by_policy[record.backend_policy] ?? 0) + 1
-      if (typeof record.repo === 'string') summary.by_repo[record.repo] = (summary.by_repo[record.repo] ?? 0) + 1
-      if (record.fallback === true) {
-        summary.fallbacks += 1
-        if (typeof record.fallback_reason === 'string') summary.fallback_reasons[record.fallback_reason] = (summary.fallback_reasons[record.fallback_reason] ?? 0) + 1
-      }
-      if (record.weak === true) summary.weak += 1
-      if (record.truncated === true) summary.truncated += 1
-      if (Number.isInteger(record.outside_corpus)) summary.outside_corpus += record.outside_corpus
-      if (Number.isInteger(record.duration_ms)) summary.total_duration_ms += record.duration_ms
-      if (Number.isInteger(record.result_chars)) summary.total_result_chars += record.result_chars
+      records.push(record)
     }
   }
-  return summary
+  return summarizeContextRecords(records)
 }
 
 function candidateSummary(since) {

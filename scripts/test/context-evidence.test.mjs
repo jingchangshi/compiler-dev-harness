@@ -251,13 +251,18 @@ test('analyzer: report renders the after-inspect lines', () => {
   assert.match(report, /after-inspect by backend \(ordering, not causality\): ripwire: discovery 1, verification 0/)
 })
 
-// ── context stream aggregation (Workstream D) ──────────────────────────────
+// ── context stream aggregation (Workstream D / R1.6 protocol v2) ───────────
 
+// Mixed v1 (R1/R1.5) and v2 (R1.6) records, plus one malformed line. The v1
+// fallback record MUST normalize to: ripwire attempt weak + legacy served.
 const CONTEXT_LINES = [
+  // v1: ripwire served with truncation + outside corpus
   JSON.stringify({ ts: '2026-09-08T10:00:00.000Z', correlation_id: 'kctx000000000001', backend_policy: 'auto', provider: 'ripwire', mode: 'pack-task', duration_ms: 2400, result_chars: 8000, truncated: true, weak: false, fallback: false, fallback_reason: null, repo: 'AscendNPU-IR', file_count: 1, symbol_count: 3, ranked_symbols: 6, bodies: 3, tests: 0, outside_corpus: 1 }),
+  // v1: auto fallback after a WEAK ripwire attempt; legacy served
   JSON.stringify({ ts: '2026-09-08T10:01:00.000Z', correlation_id: 'kctx000000000001', backend_policy: 'auto', provider: 'legacy-rg', mode: 'legacy', duration_ms: 1400, result_chars: 5000, truncated: false, weak: true, fallback: true, fallback_reason: 'ripwire-weak-result', repo: 'AscendNPU-IR', file_count: 1, symbol_count: 3 }),
   'not json at all',
-  JSON.stringify({ ts: '2026-09-01T10:00:00.000Z', correlation_id: 'kctx000000000001', backend_policy: 'auto', provider: 'ripwire', mode: 'pack-task', duration_ms: 9000, result_chars: 9000, truncated: false, weak: false, fallback: false, fallback_reason: null, repo: 'AscendNPU-IR' }),
+  // v2: the critical attribution case — ripwire attempt ERRORS, legacy serves
+  JSON.stringify({ schema_version: 2, ts: '2026-09-08T10:02:00.000Z', correlation_id: 'kctx000000000002', backend_policy: 'auto', attempts: [{ provider: 'ripwire', outcome: 'error', reason: 'ripwire-invocation-failed', duration_ms: 120, result_chars: 0 }, { provider: 'legacy-rg', outcome: 'served', duration_ms: 1400, result_chars: 5200 }], served_provider: 'legacy-rg', delivery_state: 'fallback', total_duration_ms: 1580, delivery_result_chars: 5200, weak: false, truncated: false, repo: 'AscendNPU-IR', file_count: 1, symbol_count: 3, outside_corpus: 0 }),
 ].join('\n')
 
 function makeContextDir(lines) {
@@ -266,18 +271,32 @@ function makeContextDir(lines) {
   return dir
 }
 
-test('summary: context stream aggregates into counts only, tolerating malformed lines', () => {
+test('summary (R1.6): attempts grouped by attempted provider, deliveries by served provider', () => {
   const dir = makeContextDir(CONTEXT_LINES)
   try {
     const summary = aggregate({ contextDir: dir })
-    assert.equal(summary.context.total, 3, 'the malformed line is skipped, not fatal')
-    assert.deepEqual(summary.context.by_provider, { ripwire: 2, 'legacy-rg': 1 })
-    assert.equal(summary.context.fallbacks, 1)
-    assert.deepEqual(summary.context.fallback_reasons, { 'ripwire-weak-result': 1 })
-    assert.equal(summary.context.weak, 1)
-    assert.equal(summary.context.truncated, 1)
-    assert.equal(summary.context.outside_corpus, 1)
-    assert.equal(summary.context.total_duration_ms, 2400 + 1400 + 9000)
+    assert.equal(summary.context.records_total, 3, 'the malformed line is skipped, not fatal')
+    assert.deepEqual(summary.context.by_schema, { v1: 2, v2: 1, unknown: 0 }, 'v1 records are normalized, never dropped')
+    // Plane A — attempt reliability belongs to the ATTEMPTED provider.
+    const ripwireAttempts = summary.context.attempts.by_provider.ripwire
+    assert.equal(ripwireAttempts.attempts, 3)
+    assert.equal(ripwireAttempts.served, 1)
+    assert.equal(ripwireAttempts.weak, 1, 'the v1 weak-fallback record attributes the weak attempt to Ripwire')
+    assert.equal(ripwireAttempts.error, 1, 'the v2 error attempt belongs to Ripwire')
+    // Plane A: the legacy attempt is a SERVED attempt, never an error.
+    const legacyAttempts = summary.context.attempts.by_provider['legacy-rg']
+    assert.equal(legacyAttempts.attempts, 2)
+    assert.equal(legacyAttempts.served, 2)
+    assert.equal(legacyAttempts.error, 0, 'THE CENTRAL R1.6 RULE: a legacy fallback delivery is not a legacy failure')
+    // Plane B — deliveries belong to the SERVED provider.
+    assert.equal(summary.context.deliveries.total, 3)
+    assert.deepEqual(summary.context.deliveries.by_provider, { 'legacy-rg': 2, ripwire: 1 })
+    assert.equal(summary.context.deliveries.fallbacks, 2, 'both fallback records (v1 weak, v2 error) are fallback deliveries')
+    assert.equal(summary.context.deliveries.served, 1)
+    assert.equal(summary.context.deliveries.weak, 1)
+    assert.equal(summary.context.deliveries.truncated, 1)
+    assert.equal(summary.context.deliveries.outside_corpus, 1)
+    assert.equal(summary.context.deliveries.total_duration_ms, 2400 + 1400 + 1580)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -287,8 +306,8 @@ test('summary: --since filters context records by their ts prefix', () => {
   const dir = makeContextDir(CONTEXT_LINES)
   try {
     const summary = aggregate({ contextDir: dir, since: '2026-09-08' })
-    assert.equal(summary.context.total, 2)
-    assert.equal(summary.context.total_duration_ms, 2400 + 1400)
+    assert.equal(summary.context.records_total, 3)
+    assert.equal(summary.context.deliveries.total_duration_ms, 2400 + 1400 + 1580)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -311,9 +330,11 @@ test('bundle: context summary is exported, the raw stream is not, and privacy st
     mkdirSync(extracted, { recursive: true })
     execFileSync('tar', ['-xzf', output, '-C', extracted])
     const contextSummary = JSON.parse(readFileSyncSafe(join(extracted, 'context-summary.json')))
-    assert.equal(contextSummary.total, 2)
-    assert.deepEqual(contextSummary.by_provider, { ripwire: 1, 'legacy-rg': 1 })
-    assert.equal(contextSummary.fallbacks, 1)
+    assert.equal(contextSummary.records_total, 3)
+    assert.equal(contextSummary.attempts.by_provider.ripwire.error, 1, 'attempt reliability by attempted provider ships')
+    assert.equal(contextSummary.attempts.by_provider['legacy-rg'].served, 2)
+    assert.equal(contextSummary.deliveries.fallbacks, 2)
+    assert.equal(contextSummary.deliveries.by_provider['legacy-rg'], 2)
     const manifest = JSON.parse(readFileSyncSafe(join(extracted, 'manifest.json')))
     assert.ok(manifest.contents.some(entry => entry.path === 'context-summary.json'), 'the manifest lists the context summary')
     assert.equal(manifest.privacy_check, 'passed (fail-closed)')
@@ -329,9 +350,10 @@ function readFileSyncSafe(path) {
 
 // ── evaluation surface (Workstream F) ──────────────────────────────────────
 
-test('evaluation: compares observed providers with objective counts and no decision', () => {
+test('evaluation (R1.6): attempt reliability vs delivered context, with the critical attribution rule', () => {
   const dir = makeContextDir(CONTEXT_LINES)
-  const sessionPath = join(dir, 'fake-session.jsonl')
+  const sessionDir = mkdtempSync(join(tmpdir(), 'r16-sessions-'))
+  const sessionPath = join(sessionDir, 'fake-session.jsonl')
   writeFileSync(sessionPath, `${JSON.stringify(SESSION_HEADER)}\n${[
     toolCall(1, 'compiler_route', ROUTE_ARGS, 'r1'),
     toolResult(2, 'r1', ROUTE_RESULT_TEXT),
@@ -343,20 +365,29 @@ test('evaluation: compares observed providers with objective counts and no decis
   try {
     const report = evaluate({ sessionPaths: [sessionPath], contextDir: dir })
     assert.match(report.scope.note, /not controlled experiments/)
-    assert.match(report.scope.note, /never imply/)
+    assert.match(report.scope.attribution_model, /ATTEMPTED provider.*SERVED provider/s)
     assert.equal(report.scope.paired_comparison.includes('not implemented'), true)
-    const ripwire = report.observation.by_provider.ripwire
-    assert.equal(ripwire.calls, 2)
-    assert.equal(ripwire.fallback_rate, 0)
-    assert.equal(ripwire.truncated_rate, 0.5)
-    assert.ok(report.observation.by_provider['legacy-rg'].weak_rate === 1)
+    // Plane A: attempt reliability by ATTEMPTED provider.
+    const ripwireAttempts = report.attempt_reliability.by_provider.ripwire
+    assert.equal(ripwireAttempts.attempts, 3)
+    assert.equal(ripwireAttempts.error, 1)
+    assert.equal(ripwireAttempts.weak, 1)
+    assert.equal(ripwireAttempts.fallback_triggering, 2)
+    assert.equal(report.attempt_reliability.by_provider['legacy-rg'].served, 2)
+    assert.equal(report.attempt_reliability.by_provider['legacy-rg'].error, 0, 'THE CENTRAL R1.6 RULE: no legacy error for a fallback delivery')
+    // Plane B: deliveries by SERVED provider.
+    assert.equal(report.delivered_context.total_deliveries, 3)
+    assert.deepEqual(report.delivered_context.by_provider, { 'legacy-rg': 2, ripwire: 1 })
+    assert.equal(report.delivered_context.fallbacks, 2)
+    assert.equal(report.delivered_context.fallback_rate, 0.6667, 'rates round to 4 decimals')
+    assert.equal(report.delivered_context.degraded, 0)
+    // Post-delivery search behavior stays grouped by the SERVED backend.
     assert.equal(report.adoption.inspect_calls, 1)
     assert.equal(report.adoption.searches_after_inspect.discovery, 1)
     assert.deepEqual(report.adoption.search_by_backend, { ripwire: { discovery: 1, verification: 0 } })
-    assert.equal(report.adoption.tasks_with_inspect, 1)
-    assert.equal(report.adoption.tasks_with_inspect_and_zero_discovery_after, 0)
     assert.equal(JSON.stringify(report).includes('promote'), false, 'no decision language in the report')
   } finally {
+    rmSync(sessionDir, { recursive: true, force: true })
     rmSync(dir, { recursive: true, force: true })
   }
 })

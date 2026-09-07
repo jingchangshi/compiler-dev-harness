@@ -97,7 +97,7 @@ test('H2: C/C++ attached-brace definitions are found by the definition pass', { 
       bundle.definitions.some(line => line.includes('lib/wrappers.cpp') && line.includes('dtile_ld_dev_u16')),
       `definition line must point at wrappers.cpp, got: ${JSON.stringify(bundle.definitions)}`,
     )
-    assert.equal(bundle.budget.version, '1.4')
+    assert.equal(bundle.budget.version, '1.5')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -144,7 +144,7 @@ test('H1: the driver accepts out-of-range history_window and clamps silently', {
   try {
     for (const window of [0, 40]) {
       const bundle = await inspectCompilerRepository({ repo_root: root, symbols: ['dtile_ld_dev_u16'], history_window: window })
-      assert.equal(bundle.budget.version, '1.4')
+      assert.equal(bundle.budget.version, '1.5')
       assert.ok(bundle.repository.root.length > 0)
     }
   } finally {

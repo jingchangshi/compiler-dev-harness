@@ -17,6 +17,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join, resolve, basename } from 'node:path'
 import { analyzeRecords, loadRecords, parseRecords } from './analyze-session.mjs'
+import { normalizeContextObservation } from '../compiler-context-backend.mjs'
 import { OBSERVATION_KINDS, GAP_CATEGORIES, validateFeedback } from './feedback-schema.mjs'
 
 const DEFAULT_ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -87,6 +88,61 @@ function sessionDate(records) {
   return undefined
 }
 
+/**
+ * Phase R1.6: aggregate normalized context-observation records into the
+ * attempt/delivery split. HARD RULE: provider-attempt reliability is grouped
+ * by the ATTEMPTED provider (a Ripwire failure is a Ripwire failure even when
+ * legacy then served); post-delivery behavior and delivery counts are grouped
+ * by the SERVED provider. v1 records are normalized (never rewritten on disk);
+ * malformed lines never reach this function.
+ */
+export function summarizeContextRecords(records) {
+  const summary = {
+    records_total: 0,
+    by_schema: { v1: 0, v2: 0, unknown: 0 },
+    attempts: { total: 0, by_provider: {} },
+    deliveries: { total: 0, by_provider: {}, served: 0, fallbacks: 0, degraded: 0, weak: 0, truncated: 0, outside_corpus: 0, total_duration_ms: 0, total_result_chars: 0 },
+  }
+  const attemptEntry = (provider) => summary.attempts.by_provider[provider]
+    ?? (summary.attempts.by_provider[provider] = { attempts: 0, served: 0, weak: 0, error: 0, timeout: 0, invalid_output: 0, not_found: 0, total_duration_ms: 0, total_result_chars: 0 })
+  for (const raw of records) {
+    const record = normalizeContextObservation(raw)
+    if (record === null || typeof record !== 'object') continue
+    summary.records_total += 1
+    if (raw.schema_version === 2) summary.by_schema.v2 += 1
+    else if (typeof raw.provider === 'string' || raw.fallback !== undefined) summary.by_schema.v1 += 1
+    else summary.by_schema.unknown += 1
+    for (const attempt of record.attempts ?? []) {
+      const provider = typeof attempt?.provider === 'string' ? attempt.provider : 'unknown'
+      const entry = attemptEntry(provider)
+      summary.attempts.total += 1
+      entry.attempts += 1
+      const outcome = typeof attempt.outcome === 'string' ? attempt.outcome : 'unknown'
+      if (outcome === 'served') entry.served += 1
+      else if (outcome === 'weak') entry.weak += 1
+      else if (outcome === 'error') entry.error += 1
+      else if (outcome === 'timeout') entry.timeout += 1
+      else if (outcome === 'invalid-output') entry.invalid_output += 1
+      else if (outcome === 'not-found') entry.not_found += 1
+      if (Number.isInteger(attempt.duration_ms)) entry.total_duration_ms += attempt.duration_ms
+      if (Number.isInteger(attempt.result_chars)) entry.total_result_chars += attempt.result_chars
+    }
+    const served = typeof record.served_provider === 'string' ? record.served_provider : null
+    summary.deliveries.total += 1
+    if (served !== null) summary.deliveries.by_provider[served] = (summary.deliveries.by_provider[served] ?? 0) + 1
+    const state = typeof record.delivery_state === 'string' ? record.delivery_state : 'unknown'
+    if (state === 'served') summary.deliveries.served += 1
+    else if (state === 'fallback') summary.deliveries.fallbacks += 1
+    else if (state === 'degraded') summary.deliveries.degraded += 1
+    if (record.weak === true) summary.deliveries.weak += 1
+    if (record.truncated === true) summary.deliveries.truncated += 1
+    if (Number.isInteger(record.outside_corpus)) summary.deliveries.outside_corpus += record.outside_corpus
+    if (Number.isInteger(record.total_duration_ms)) summary.deliveries.total_duration_ms += record.total_duration_ms
+    if (Number.isInteger(record.delivery_result_chars)) summary.deliveries.total_result_chars += record.delivery_result_chars
+  }
+  return summary
+}
+
 /** Aggregate sessions + streams + candidates into the batch summary object. */
 export function aggregate({ sessionPaths = [], candidatesDir, queriesDir, routesDir, contextDir, since } = {}) {
   const summary = {
@@ -104,20 +160,11 @@ export function aggregate({ sessionPaths = [], candidatesDir, queriesDir, routes
     routes: { total: 0, knowledge_expected: 0 },
     temporal: { sessions_knowledge_before_search: 0, sessions_with_discovery_after_knowledge: 0, sessions_with_discovery_after_inspect: 0 },
     search: { discovery_after_knowledge: 0, verification_reads: 0, uncertain: 0, discovery_after_inspect: 0, verification_after_inspect: 0 },
-    // Phase R1.5: compiler-dev-owned generic context-provider telemetry.
-    // Counts only — the provider decision stays with the human reviewer.
-    context: {
-      total: 0,
-      by_provider: {},
-      by_policy: {},
-      fallbacks: 0,
-      fallback_reasons: {},
-      weak: 0,
-      truncated: 0,
-      outside_corpus: 0,
-      total_duration_ms: 0,
-      total_result_chars: 0,
-    },
+    // Phase R1.6: compiler-dev-owned generic context-provider telemetry,
+    // normalized to the logical v2 shape and split into ATTEMPT reliability
+    // (grouped by attempted provider) vs DELIVERY facts (grouped by served
+    // provider). Counts only — the provider decision stays with the human.
+    context: summarizeContextRecords(jsonlRecords(contextDir, since)),
   }
 
   for (const path of sessionPaths) {
@@ -172,21 +219,6 @@ export function aggregate({ sessionPaths = [], candidatesDir, queriesDir, routes
   // Phase R1.5: the generic context-provider stream (analysis/feedback/
   // context/). Non-sensitive operational counts only, by design of the
   // runtime writer; malformed lines are tolerated and skipped.
-  for (const record of jsonlRecords(contextDir, since)) {
-    summary.context.total += 1
-    if (typeof record.provider === 'string') summary.context.by_provider[record.provider] = (summary.context.by_provider[record.provider] ?? 0) + 1
-    if (typeof record.backend_policy === 'string') summary.context.by_policy[record.backend_policy] = (summary.context.by_policy[record.backend_policy] ?? 0) + 1
-    if (record.fallback === true) {
-      summary.context.fallbacks += 1
-      if (typeof record.fallback_reason === 'string') summary.context.fallback_reasons[record.fallback_reason] = (summary.context.fallback_reasons[record.fallback_reason] ?? 0) + 1
-    }
-    if (record.weak === true) summary.context.weak += 1
-    if (record.truncated === true) summary.context.truncated += 1
-    if (Number.isInteger(record.outside_corpus)) summary.context.outside_corpus += record.outside_corpus
-    if (Number.isInteger(record.duration_ms)) summary.context.total_duration_ms += record.duration_ms
-    if (Number.isInteger(record.result_chars)) summary.context.total_result_chars += record.result_chars
-  }
-
   for (const candidate of loadCandidates(candidatesDir, since)) {
     if (!candidate.valid) {
       summary.candidates.invalid += 1
@@ -215,8 +247,13 @@ function formatText(summary) {
   lines.push(`query commands: ${Object.entries(summary.queries.by_command).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`)
   lines.push(`temporal: sessions with knowledge-before-search ${summary.temporal.sessions_knowledge_before_search}, with discovery-after-knowledge ${summary.temporal.sessions_with_discovery_after_knowledge}, with discovery-after-inspect ${summary.temporal.sessions_with_discovery_after_inspect}`)
   lines.push(`search: discovery-after-knowledge ${summary.search.discovery_after_knowledge}, verification reads ${summary.search.verification_reads}, uncertain ${summary.search.uncertain}; discovery-after-inspect ${summary.search.discovery_after_inspect}, verification-after-inspect ${summary.search.verification_after_inspect}`)
-  const contextProviders = Object.entries(summary.context.by_provider).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'
-  lines.push(`context: ${summary.context.total} attempts (${contextProviders}; fallbacks ${summary.context.fallbacks}, weak ${summary.context.weak}, truncated ${summary.context.truncated}, outside-corpus ${summary.context.outside_corpus}, total ${summary.context.total_duration_ms} ms)`)
+  const ctx = summary.context
+  const contextProviders = Object.entries(ctx.deliveries.by_provider).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'
+  lines.push(`context: ${ctx.deliveries.total} deliveries (${contextProviders}; served ${ctx.deliveries.served}, fallbacks ${ctx.deliveries.fallbacks}, degraded ${ctx.deliveries.degraded}, weak ${ctx.deliveries.weak}, truncated ${ctx.deliveries.truncated}, outside-corpus ${ctx.deliveries.outside_corpus}, total ${ctx.deliveries.total_duration_ms} ms)`)
+  const attemptLines = Object.entries(ctx.attempts.by_provider)
+    .map(([provider, e]) => `${provider}: ${e.attempts} attempts (served ${e.served}, weak ${e.weak}, error ${e.error}, timeout ${e.timeout}, invalid ${e.invalid_output}, not-found ${e.not_found})`)
+    .join('; ')
+  if (attemptLines !== '') lines.push(`  attempts (reliability by attempted provider): ${attemptLines}`)
   lines.push('(counts only — architecture decisions stay with the human reviewer)')
   return lines.join('\n')
 }

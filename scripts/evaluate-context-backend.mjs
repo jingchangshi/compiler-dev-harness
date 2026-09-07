@@ -27,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join, resolve } from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { analyzeRecords, loadRecords, parseRecords } from './analyze-session.mjs'
-import { jsonlRecords } from './summarize-feedback.mjs'
+import { jsonlRecords, summarizeContextRecords } from './summarize-feedback.mjs'
 
 const DEFAULT_ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -46,44 +46,34 @@ function parseArgs(argv) {
   return options
 }
 
-const emptyRates = () => ({
-  calls: 0,
-  fallbacks: 0,
-  weak: 0,
-  truncated: 0,
-  outside_corpus: 0,
-  total_duration_ms: 0,
-  total_result_chars: 0,
-})
-
 function rate(numerator, denominator) {
   return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : null
 }
 
-/** Observation-stream view: one reliability/cost block per provider. */
-function observationByProvider(records) {
+/**
+ * Plane A — provider ATTEMPT reliability (R1.6 §11): grouped by the ATTEMPTED
+ * provider. A Ripwire failure belongs to Ripwire here, even when legacy then
+ * served the delivery. Derived from normalized v2/v1 context observations.
+ */
+function attemptReliability(contextSummary) {
   const byProvider = {}
-  for (const record of records) {
-    const provider = typeof record.provider === 'string' ? record.provider : 'unknown'
-    const entry = byProvider[provider] ?? (byProvider[provider] = { ...emptyRates(), fallback_reasons: {}, repos: {} })
-    entry.calls += 1
-    if (record.fallback === true) {
-      entry.fallbacks += 1
-      if (typeof record.fallback_reason === 'string') entry.fallback_reasons[record.fallback_reason] = (entry.fallback_reasons[record.fallback_reason] ?? 0) + 1
+  for (const [provider, entry] of Object.entries(contextSummary.attempts.by_provider)) {
+    byProvider[provider] = {
+      attempts: entry.attempts,
+      served: entry.served,
+      weak: entry.weak,
+      error: entry.error,
+      timeout: entry.timeout,
+      invalid_output: entry.invalid_output,
+      not_found: entry.not_found,
+      fallback_triggering: entry.weak + entry.error + entry.timeout + entry.invalid_output + entry.not_found,
+      error_rate: rate(entry.error + entry.timeout + entry.invalid_output + entry.not_found, entry.attempts),
+      weak_rate: rate(entry.weak, entry.attempts),
+      avg_attempt_duration_ms: entry.attempts > 0 && entry.total_duration_ms > 0 ? Math.round(entry.total_duration_ms / entry.attempts) : null,
+      avg_attempt_result_chars: entry.attempts > 0 && entry.total_result_chars > 0 ? Math.round(entry.total_result_chars / entry.attempts) : null,
+      duration_semantics: 'one provider boundary only (Ripwire: pack-task subprocess; legacy: rg collection block)',
+      size_semantics: 'provider-boundary output (Ripwire: raw --json stdout; legacy: rendered bundle it filled) — NOT comparable across providers',
     }
-    if (record.weak === true) entry.weak += 1
-    if (record.truncated === true) entry.truncated += 1
-    if (Number.isInteger(record.outside_corpus)) entry.outside_corpus += record.outside_corpus
-    if (Number.isInteger(record.duration_ms)) entry.total_duration_ms += record.duration_ms
-    if (Number.isInteger(record.result_chars)) entry.total_result_chars += record.result_chars
-    if (typeof record.repo === 'string') entry.repos[record.repo] = (entry.repos[record.repo] ?? 0) + 1
-  }
-  for (const entry of Object.values(byProvider)) {
-    entry.fallback_rate = rate(entry.fallbacks, entry.calls)
-    entry.weak_rate = rate(entry.weak, entry.calls)
-    entry.truncated_rate = rate(entry.truncated, entry.calls)
-    entry.avg_duration_ms = entry.calls > 0 ? Math.round(entry.total_duration_ms / entry.calls) : 0
-    entry.avg_result_chars = entry.calls > 0 ? Math.round(entry.total_result_chars / entry.calls) : 0
   }
   return byProvider
 }
@@ -158,21 +148,52 @@ function sessionEvidence(sessionPaths, since) {
 /** Build the full evaluation report from session paths and a context stream dir. */
 export function evaluate({ sessionPaths = [], contextDir, since } = {}) {
   const contextRecords = jsonlRecords(contextDir, since)
+  const contextSummary = summarizeContextRecords(contextRecords)
   return {
     generated_at: new Date().toISOString(),
     since: since ?? null,
     scope: {
       note: 'Observational comparison of compiler_inspect backend usage and the ordering of later source searches. Sessions are not controlled experiments: differences between providers do not establish causation, and ordering metrics never imply that a backend failed. This report computes no promotion or rejection decision — human architecture review owns that (promotion gate: ARCHITECTURE.md).',
+      attribution_model: 'attempt reliability is grouped by the ATTEMPTED provider; post-delivery behavior and delivery counts are grouped by the SERVED provider. A Ripwire failure followed by a legacy fallback is a Ripwire attempt failure plus a legacy served delivery — never a legacy failure.',
       paired_comparison: 'not implemented by design: pairing would require metadata this tool refuses to infer from prompts',
       sessions_analyzed: sessionPaths.length,
-      context_records: contextRecords.length,
+      context_records: contextSummary.records_total,
     },
-    observation: {
-      source: 'context observation stream (compiler-dev-owned, counts only)',
-      by_provider: observationByProvider(contextRecords),
+    data_quality: {
+      source: 'context observation stream normalized to the logical v2 shape; v1 records are inferred, never rewritten on disk',
+      by_schema: contextSummary.by_schema,
+      ambiguous_note: 'v1 fallback records without a Ripwire reason carry no attempts (unknown), by design',
+    },
+    attempt_reliability: {
+      source: 'provider ATTEMPTS (plane A) — grouped by attempted provider',
+      total_attempts: contextSummary.attempts.total,
+      by_provider: attemptReliability(contextSummary),
+    },
+    delivered_context: {
+      source: 'deliveries (plane B) — grouped by the provider that actually supplied Agent-visible context',
+      total_deliveries: contextSummary.deliveries.total,
+      by_provider: contextSummary.deliveries.by_provider,
+      served: contextSummary.deliveries.served,
+      fallbacks: contextSummary.deliveries.fallbacks,
+      degraded: contextSummary.deliveries.degraded,
+      weak: contextSummary.deliveries.weak,
+      truncated: contextSummary.deliveries.truncated,
+      outside_corpus: contextSummary.deliveries.outside_corpus,
+      fallback_rate: rate(contextSummary.deliveries.fallbacks, contextSummary.deliveries.total),
+      degraded_rate: rate(contextSummary.deliveries.degraded, contextSummary.deliveries.total),
+      weak_rate: rate(contextSummary.deliveries.weak, contextSummary.deliveries.total),
+      truncated_rate: rate(contextSummary.deliveries.truncated, contextSummary.deliveries.total),
+      outside_corpus_rate: rate(contextSummary.deliveries.outside_corpus > 0 ? 1 : 0, contextSummary.deliveries.total),
+    },
+    cost: {
+      attempt_duration_semantics: 'per provider boundary; total_duration_ms covers the WHOLE compiler_inspect call (git state, history, diff, log forensics, rendering/bounding included)',
+      total_attempt_duration_ms: Object.values(contextSummary.attempts.by_provider).reduce((sum, e) => sum + e.total_duration_ms, 0),
+      total_call_duration_ms: contextSummary.deliveries.total_duration_ms,
+      total_delivery_result_chars: contextSummary.deliveries.total_result_chars,
+      size_comparability: 'attempt sizes are provider-boundary and NOT comparable across providers; delivery_result_chars is the only cross-provider comparable size',
     },
     adoption: {
-      source: 'session logs (rendered Context backend lines; pre-R1.3 sessions carry none)',
+      source: 'session logs (rendered Context backend lines = SERVED backend; pre-R1.3 sessions carry none)',
       ...sessionEvidence(sessionPaths, since),
     },
   }
@@ -182,11 +203,13 @@ function formatText(report) {
   const lines = []
   lines.push(`context-backend evaluation (generated ${report.generated_at}${report.since ? `, since ${report.since}` : ''})`)
   lines.push(`scope: ${report.scope.sessions_analyzed} sessions, ${report.scope.context_records} context records — ${report.scope.note}`)
-  for (const [provider, entry] of Object.entries(report.observation.by_provider)) {
-    lines.push(`observation ${provider}: calls ${entry.calls}, fallback ${entry.fallbacks} (${entry.fallback_rate ?? 'n/a'}), weak ${entry.weak} (${entry.weak_rate ?? 'n/a'}), truncated ${entry.truncated} (${entry.truncated_rate ?? 'n/a'}), outside-corpus ${entry.outside_corpus}, avg ${entry.avg_duration_ms} ms / ${entry.avg_result_chars} chars`)
+  lines.push(`data quality: ${JSON.stringify(report.data_quality.by_schema)}`)
+  for (const [provider, entry] of Object.entries(report.attempt_reliability.by_provider)) {
+    lines.push(`attempts ${provider}: ${entry.attempts} (served ${entry.served}, weak ${entry.weak}, error ${entry.error}, timeout ${entry.timeout}, invalid ${entry.invalid_output}, not-found ${entry.not_found}; error rate ${entry.error_rate ?? 'n/a'})`)
   }
-  const adoption = report.adoption
-  lines.push(`adoption: inspect calls ${adoption.inspect_calls} (${Object.entries(adoption.by_backend).map(([k, v]) => `${k}: ${v}`).join(', ') || 'no backend metadata'}), fallbacks ${adoption.fallbacks}, weak ${adoption.weak_results}, truncated ${adoption.truncated_results}`)
+  const delivered = report.delivered_context
+  lines.push(`deliveries: ${delivered.total_deliveries} (${Object.entries(delivered.by_provider).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}); served ${delivered.served}, fallbacks ${delivered.fallbacks} (${delivered.fallback_rate ?? 'n/a'}), degraded ${delivered.degraded} (${delivered.degraded_rate ?? 'n/a'}), weak ${delivered.weak} (${delivered.weak_rate ?? 'n/a'}), truncated ${delivered.truncated} (${delivered.truncated_rate ?? 'n/a'}), outside-corpus ${delivered.outside_corpus}`)
+  lines.push(`cost: provider attempts ${report.cost.total_attempt_duration_ms} ms, whole calls ${report.cost.total_call_duration_ms} ms, delivered ${report.cost.total_delivery_result_chars} chars`)
   lines.push(`search efficiency (ordering only): discovery-after-inspect ${adoption.searches_after_inspect.discovery}, verification-after-inspect ${adoption.searches_after_inspect.verification}; tasks with inspect ${adoption.tasks_with_inspect}/${adoption.tasks_routed} routed, zero discovery after inspect ${adoption.tasks_with_inspect_and_zero_discovery_after}`)
   lines.push(`cost: tool result bytes ${adoption.tool_result_bytes_total}, max peak request context ${adoption.peak_request_tokens_max}, sessions with first-inspect-before-first-edit ${adoption.sessions_first_inspect_before_first_edit}/${adoption.sessions_first_inspect_step}`)
   lines.push('(counts only — the promotion decision stays with the human reviewer)')

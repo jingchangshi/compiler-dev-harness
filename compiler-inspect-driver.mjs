@@ -53,17 +53,19 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve, relative, isAbsolute, dirname } from 'node:path'
 import {
   BACKEND_LEGACY,
+  BACKEND_NONE,
   BACKEND_RIPWIRE,
   FALLBACK_REASONS,
   RipwireContextError,
   contextObservationRecord,
   logContextRecord,
+  outcomeForReason,
   outsideCorpusFiles,
   resolveBackendPolicy,
   runRipwireContext,
-} from './compiler-context-backend.mjs?v=1.1'
+} from './compiler-context-backend.mjs?v=1.2'
 
-const VERSION = '1.4'
+const VERSION = '1.5'
 const MAX_ITEMS = 12
 const MAX_LINE_CHARS = 280
 const MAX_DEFINITION_ITEMS = 10
@@ -511,6 +513,11 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
   let fallbackReason = null
   let sourceContext = null
   let sourceDisclosures = null
+  // R1.6 attribution facts: what was ATTEMPTED (with finite outcomes and
+  // provider-boundary costs) vs what actually SERVED. Attempted ≠ served.
+  const attempts = []
+  let servedProvider = null
+  let deliveryState = null
   let ripwireAttempt // observation-plane facts about the ripwire attempt, if one ran
   // Anchored files that can never be in Ripwire's indexed corpus (crawl-pruned
   // or contract-excluded trees) — reported whenever a Ripwire attempt ran,
@@ -520,6 +527,9 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
     : []
 
   if (policy.policy !== 'legacy' && sourceRetrievalRequested) {
+    const attemptStart = Date.now()
+    let ripwireOutcome
+    let ripwireReason
     try {
       const result = await runRipwireContext({ ...input, task: task || undefined }, signal, { excludeDirs: input.exclude_dirs, env })
       if (!includeTests && result.sourceContext.tests_to_run.length > 0) {
@@ -533,6 +543,15 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
         weak: result.disclosures.weak,
         failed: false,
       }
+      ripwireOutcome = result.disclosures.weak ? 'weak' : 'served'
+      attempts.push({
+        provider: BACKEND_RIPWIRE,
+        outcome: ripwireOutcome,
+        duration_ms: result.meta.duration_ms,
+        result_chars: result.meta.result_chars,
+        weak: result.disclosures.weak === true,
+        truncated: result.disclosures.truncated === true,
+      })
       if (result.disclosures.weak && policy.policy === 'auto') {
         // Weak = nothing retrieved. In auto that is a controlled fallback, and
         // "not retrieved" must never read as semantic absence.
@@ -553,7 +572,16 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
       }
     } catch (error) {
       if (!(error instanceof RipwireContextError)) throw error
-      ripwireAttempt = { failed: true, reason: error.reason, duration_ms: Date.now() - startedAt }
+      ripwireAttempt = { failed: true, reason: error.reason, duration_ms: Date.now() - attemptStart }
+      ripwireOutcome = outcomeForReason(error.reason)
+      ripwireReason = error.reason
+      attempts.push({
+        provider: BACKEND_RIPWIRE,
+        outcome: ripwireOutcome,
+        reason: error.reason,
+        duration_ms: ripwireAttempt.duration_ms,
+        result_chars: 0,
+      })
       if (policy.policy === 'auto') {
         fallback = true
         fallbackReason = error.reason
@@ -605,14 +633,27 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
   let vendored = []
   let vendoredResult = { items: [], reason: null }
   let tests = []
+  let legacyAttempt // R1.6: provider-boundary facts for the legacy rg attempt
   if (backend !== BACKEND_RIPWIRE) {
     signal?.throwIfAborted()
+    const legacyStart = Date.now()
     definitions = await collectDefinitions(root, symbols, excludedDirs, exactFiles, signal)
     references = await collectReferences(root, symbols, excludedDirs, signal)
     vendoredResult = await collectVendoredFallback(root, symbols, excludedDirs, definitions.length + references.length, signal, { anchorInVendored, definitionsEmpty: symbols.length > 0 && definitions.length === 0 })
     vendored = vendoredResult.items
     signal?.throwIfAborted()
     tests = includeTests ? await collectTestMatches(root, symbols, contractTestDirs, excludedDirs, signal) : []
+    legacyAttempt = {
+      duration_ms: Date.now() - legacyStart,
+      result_chars: 0, // filled after rendering (the legacy provider output IS the rendered bundle)
+      weak: (definitions.length + references.length + vendored.length + tests.length) === 0,
+    }
+    attempts.push({
+      provider: BACKEND_LEGACY,
+      outcome: 'served',
+      duration_ms: legacyAttempt.duration_ms,
+      weak: legacyAttempt.weak,
+    })
   } else if (outsideCorpus.some(file => VENDOR_DIRS.some(dir => file === dir || file.startsWith(`${dir}/`)))) {
     signal?.throwIfAborted()
     vendoredResult = await collectVendoredFallback(root, symbols, excludedDirs, 0, signal, { anchorInVendored: true })
@@ -654,6 +695,24 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
     ['Unresolved', limitedLines(unresolved, 8)],
   ]
   const { text: rendered, truncated } = enforceBudget(sections)
+  // R1.6 delivery attribution: which provider actually served the Agent-visible
+  // context, and whether that was normal service, a fallback, or a degraded
+  // (nothing-served) result. Attempt facts live in `attempts`.
+  if (legacyAttempt !== undefined) legacyAttempt.result_chars = rendered.length
+  let deliveryStateResolved
+  if (backend === BACKEND_RIPWIRE) {
+    if (sourceContext?.degraded === true) {
+      servedProvider = null
+      deliveryStateResolved = 'degraded'
+    } else {
+      servedProvider = BACKEND_RIPWIRE
+      deliveryStateResolved = 'served'
+    }
+  } else {
+    servedProvider = BACKEND_LEGACY
+    deliveryStateResolved = fallback === true ? 'fallback' : 'served'
+  }
+  deliveryState = deliveryStateResolved
   // Schema-strict output: keys must be present-and-typed or absent, never
   // present-with-undefined (the harness validates the object, not its JSON
   // spelling). Rows are already compact; the two top-level Ripwire objects get
@@ -662,7 +721,8 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
   const bundle = {
     repository,
     anchors: { files: exactFiles, symbols },
-    backend,
+    backend: servedProvider ?? BACKEND_NONE,
+    delivery_state: deliveryState,
     fallback,
     fallback_reason: fallbackReason,
     source_context: stripUndefined(sourceContext),
@@ -684,31 +744,33 @@ export async function inspectCompilerRepository(input, signal, context = {}) {
     },
   }
 
-  // ── Observation plane (goal §16): one non-sensitive line per source-      ──
-  // ── retrieval attempt. Counts/categories only — never task prose, paths,  ──
-  // ── source bodies, raw Ripwire output, or stderr.                         ──
+  // ── Observation plane (goal §16; R1.6 protocol v2): one non-sensitive     ──
+  // ── line per source-retrieval attempt recording the REQUESTED policy,     ──
+  // ── every provider ATTEMPT with its finite outcome, what SERVED, and the  ──
+  // ── delivery state — independent facts, never collapsed. Counts and      ──
+  // ── durations only: never task prose, paths, source bodies, raw Ripwire  ──
+  // ── output, or stderr.                                                   ──
   if (sourceRetrievalRequested) {
-    const rankedCount = sourceContext?.ranked_symbols?.length
     logContextRecord(contextObservationRecord({
       correlationId: context.correlationId,
       policy: policy.policy,
-      backend,
-      fallback,
-      fallbackReason,
-      durationMs: Date.now() - startedAt,
-      resultChars: backend === BACKEND_RIPWIRE
-        ? (sourceContext?.degraded === true ? 0 : (ripwireAttempt?.result_chars ?? 0))
-        : rendered.length,
+      attempts,
+      servedProvider,
+      deliveryState,
+      totalDurationMs: Date.now() - startedAt,
+      deliveryResultChars: rendered.length,
+      weak: deliveryState === 'degraded'
+        ? true
+        : backend === BACKEND_RIPWIRE
+          ? (ripwireAttempt?.weak ?? false)
+          : (legacyAttempt?.weak ?? false),
       truncated: truncated === true || sourceDisclosures?.truncated === true,
-      weak: backend === BACKEND_RIPWIRE
-        ? (sourceContext?.degraded === true ? true : ripwireAttempt?.weak)
-        : (definitions.length + references.length + vendored.length + tests.length) === 0,
       repoRoot: root,
       fileCount: exactFiles.length,
       symbolCount: symbols.length,
-      rankedCount,
-      bodyCount: sourceContext?.bodies?.length,
-      testCount: sourceContext?.tests_to_run?.length,
+      rankedCount: servedProvider === BACKEND_RIPWIRE ? sourceContext?.ranked_symbols?.length : undefined,
+      bodyCount: servedProvider === BACKEND_RIPWIRE ? sourceContext?.bodies?.length : undefined,
+      testCount: servedProvider === BACKEND_RIPWIRE ? sourceContext?.tests_to_run?.length : undefined,
       outsideCorpusCount: outsideCorpus.length,
     }), context.logDir)
   }

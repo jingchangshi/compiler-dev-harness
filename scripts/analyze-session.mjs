@@ -225,6 +225,7 @@ export function analyzeRecords(records) {
     inspectFallbacks: {},
     inspectWeakResults: 0,
     inspectTruncatedResults: 0,
+    inspectDegradedResults: 0,
     compilerKnowledgeCalls: 0,
     firstCompilerKnowledgeStep: undefined,
     knowledgeByCommand: {},
@@ -416,23 +417,32 @@ export function analyzeRecords(records) {
             view.pointers = [...extractPointers(text, new Set())].slice(0, MAX_POINTERS_PER_RESULT * 2)
           }
           if (name === COMPACT_INSPECT_TOOL) {
-            // Backend breakdown (Phase R1): the bundle's Context backend line
-            // names the provider actually used and its fallback, if any. Old
-            // sessions render no such line — zero counts are the honest
-            // pre-integration baseline, never backfilled.
+            // Backend breakdown (Phase R1; R1.6 adds degraded awareness): the
+            // bundle's Context backend line names the provider that actually
+            // SERVED and its delivery state. `delivery=degraded: <reason>`
+            // means the explicit-Ripwire request failed and NOTHING served —
+            // counted as degraded, never as a provider delivery, and never
+            // attributed post-delivery behavior. Old sessions render no such
+            // line — zero counts are the honest pre-integration baseline.
             const backendLine = CONTEXT_BACKEND_RE.exec(text)
             if (backendLine !== null) {
-              result.inspectBackends[backendLine[1]] = (result.inspectBackends[backendLine[1]] ?? 0) + 1
-              if (backendLine[2] !== 'none') {
-                result.inspectFallbacks[backendLine[2]] = (result.inspectFallbacks[backendLine[2]] ?? 0) + 1
-              }
+              const degraded = /delivery=degraded/.test(backendLine[0])
               const weak = /weak=true/.test(backendLine[0])
-              if (weak) result.inspectWeakResults += 1
               const truncated = /TRUNCATED/.test(text)
               if (truncated) result.inspectTruncatedResults += 1
-              // R1.5: keep the backend facts on the view so the ordered walk
-              // can attribute searches that FOLLOW this result.
-              view.inspect = { backend: backendLine[1], fallbackReason: backendLine[2] !== 'none' ? backendLine[2] : undefined, weak, truncated }
+              if (degraded) {
+                result.inspectDegradedResults += 1
+                view.inspect = { backend: 'none', degraded: true, weak, truncated }
+              } else {
+                result.inspectBackends[backendLine[1]] = (result.inspectBackends[backendLine[1]] ?? 0) + 1
+                if (backendLine[2] !== 'none') {
+                  result.inspectFallbacks[backendLine[2]] = (result.inspectFallbacks[backendLine[2]] ?? 0) + 1
+                }
+                if (weak) result.inspectWeakResults += 1
+                // R1.5: keep the backend facts on the view so the ordered walk
+                // can attribute searches that FOLLOW this result.
+                view.inspect = { backend: backendLine[1], fallbackReason: backendLine[2] !== 'none' ? backendLine[2] : undefined, weak, truncated }
+              }
             }
           }
           resultViews.set(callId, view)
@@ -474,7 +484,11 @@ export function analyzeRecords(records) {
     if (item.kind === 'result') {
       for (const pointer of item.view.pointers ?? []) cumulativePointers.add(pointer)
       if (item.view?.inspect !== undefined) {
-        inspectResults.push({ seq: item.seq, callId: item.view.callId, backend: item.view.inspect.backend })
+        // R1.6: a degraded result delivered NO context, so nothing that follows
+        // it can be attributed to a delivered provider.
+        if (item.view.inspect.degraded !== true) {
+          inspectResults.push({ seq: item.seq, callId: item.view.callId, backend: item.view.inspect.backend })
+        }
       }
       continue
     }
