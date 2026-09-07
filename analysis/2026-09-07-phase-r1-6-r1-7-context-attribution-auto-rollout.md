@@ -6,7 +6,7 @@
 
 - 起始 HEAD:`da07d46a12179490090b4af44d50e19b3829d538`
 - 提交:① `Phase R1.6: fix context provider attribution (observation protocol v2)`;② `Phase R1.7: make auto the default context backend`(两段式:先证据正确性,后发布决策)
-- 最终/推送 HEAD:见提交后 `git ls-remote` 核对(本报告成文时尚未推送,推送后以 remote SHA 为准)
+- 最终推送 SHA:`ef7b3ee86ba4fedbf26956f8ba2a2e6da16c83c6`(`git rev-parse HEAD` 与 `git ls-remote origin refs/heads/main` 核对一致)
 - 变更文件:`compiler-context-backend.mjs`、`compiler-inspect-driver.mjs`、`compiler-inspect-v3-5.cjs`→`v3-6.cjs`、`agent.cordis.yml`、`scripts/analyze-session.mjs`、`scripts/summarize-feedback.mjs`、`scripts/export-feedback-bundle.mjs`、`scripts/evaluate-context-backend.mjs`、三个测试文件、README、ARCHITECTURE(§15 历史标注 + 新 §16)、本报告
 
 ## B. Repository-first findings:归因缺陷确认(非假设)
