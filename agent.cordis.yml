@@ -286,7 +286,7 @@
 # after editing the .cjs, rename the file (or bump the driver's ?v= query) so a
 # new mount loads the fresh module instead of the cached one.
 - id: compiler-inspect
-  name: ./compiler-inspect-v3-1.cjs
+  name: ./compiler-inspect-v3-2.cjs
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 

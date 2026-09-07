@@ -18,7 +18,7 @@ A contract can specify environment initialization, build and test commands, acce
 
 ## Inspection and verification
 
-`compiler_inspect` (v1.1) batches repository state, requested anchors, probable definitions with bounded context, ranked references, likely tests, optional working-tree diff, and path/symbol-scoped history into one bounded bundle — batched searches, default exclusion of `.git`/build/cache noise and vendored trees (with a bounded vendored fallback), and a strict total character budget. It does not infer build or environment commands. Pass the Repository Contract's relevant test directories as `contract_test_dirs` and its vendored/submodule boundaries as `exclude_dirs`; those constraints guide task-specific exploration without duplicating the contract.
+`compiler_inspect` (v1.2) batches repository state, requested anchors, probable definitions with bounded context (keyword declarations, assignments, and C/C++ attached-brace function definitions), ranked references, likely tests, optional working-tree diff, and path/symbol-scoped history into one bounded bundle — batched searches, default exclusion of `.git`/build/cache noise and vendored trees (with a bounded vendored fallback that also runs when an anchored file sits inside a vendored tree or when no definition-shaped match exists outside them), and a strict total character budget. Optional `log_files` forensics index `IR Dump After/Before <pass>` markers in compile/pipeline logs, extract occurrence-addressed bounded dump slices, and diff two logs' pass sequences — mechanical line arithmetic only, never IR interpretation. `history_window` accepts 1–30 (declared in the schema); out-of-range values are clamped and the clamp is reported in `Unresolved` instead of failing the call. It does not infer build or environment commands. Pass the Repository Contract's relevant test directories as `contract_test_dirs` and its vendored/submodule boundaries as `exclude_dirs` — reuse them in every call of a session; those constraints guide task-specific exploration without duplicating the contract.
 
 Verification starts with targeted checks. A failed command is classified as patch-caused, environment, pre-existing, or unknown. A suspected unrelated blocker gets at most one focused control experiment; once demonstrated, record it and what it prevents, continue unaffected checks, and stop investigating it.
 
@@ -39,7 +39,11 @@ It reports model steps, tool-call mix, `compiler_inspect` adoption, skill-load f
 
 ## Reloading preset plugin edits
 
-The host process caches preset plugin modules by file URL for its lifetime. After editing `compiler-inspect-v3-1.cjs`, rename the file (and update the composition row); after editing `compiler-inspect-driver.mjs`, bump the `?v=` query in the plugin's import. Composition YAML (rows, config, skill directories) is re-read at every session mount.
+The host process caches preset plugin modules by file URL for its lifetime. After editing `compiler-inspect-v3-2.cjs`, rename the file (and update the composition row); after editing `compiler-inspect-driver.mjs`, bump the `?v=` query in the plugin's import. Composition YAML (rows, config, skill directories) is re-read at every session mount.
+
+## Case feedback loop
+
+`analysis/` holds the case feedback analysis report and, under `analysis/feedback/`, the knowledge-system feedback artifacts (`adapters/compiler-dev/feedback-schema.md` v1 in mlir-compiler-harness) distilled from audited production sessions. They record how the knowledge layer was (or was not) consumable — they are not compiler findings and are owned by this preset's maintainers.
 
 ## Phase 2 candidates
 

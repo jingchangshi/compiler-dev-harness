@@ -1,0 +1,38 @@
+{
+  "feedback": {
+    "schema_version": 1,
+    "created_at": "2026-09-06",
+    "task": {
+      "kind": "bug-investigation",
+      "target": "pattern:CopyOpToLibraryCallPattern"
+    },
+    "query": {
+      "command": "evidence",
+      "args": {
+        "id": "pattern:CopyOpToLibraryCallPattern"
+      }
+    },
+    "observation": "两个会话暴露同类知识缺口：(1) dtile io 组与 dev 组的地址契约（element 类型解释、offset 语义）无文档化事实源，模型用唯一可观测调用方形状（blade ptr<u8> 字节游标）替代契约推导，产出被人工检视推翻的错误设计；(2) copy_ubuf_to_ubuf 系列的管线归属（MTE vs V）与异步顺序保证在仓库内不可确证，根因分析只能以对照实验收敛并保留不确定性（print0/print1 的差异实为 hfusion-merge-vf 融合决策差异，推翻了人类的时序竞争假说）。",
+    "manual_source_search": {
+      "performed": true,
+      "reason": "repo 内无 io/dev 地址契约文档；CANN regbase intrinsic 语义（DMA 异步顺序）在 ccec/regbase 头文件或 ISA 文档中，仓库不可达。"
+    },
+    "possible_gap": {
+      "category": "documentation",
+      "statement": "需要 dtile io/dev 地址契约文档与离线 CANN regbase intrinsic 语义参考（管线归属、V↔MTE 握手保证）；补齐前『对照实验 + 保留不确定性』是正确姿势。"
+    },
+    "evidence": [
+      {
+        "file": "lib/Template/Megakernel/Megakernel.cpp",
+        "lines": "217-300"
+      },
+      {
+        "file": "lib/Conversion/TritonDistributedToHIVM/ASCEND/DistributedOpToHIVM.cpp",
+        "lines": "238-300"
+      }
+    ],
+    "sensitivity": {
+      "contains_sensitive_content": false
+    }
+  }
+}

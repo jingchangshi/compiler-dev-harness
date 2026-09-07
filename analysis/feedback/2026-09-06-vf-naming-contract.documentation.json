@@ -1,0 +1,38 @@
+{
+  "feedback": {
+    "schema_version": 1,
+    "created_at": "2026-09-06",
+    "task": {
+      "kind": "other",
+      "target": "pass:hfusion-flatten-ops"
+    },
+    "query": {
+      "command": "review",
+      "args": {
+        "name": "HFusionFlattenOps"
+      }
+    },
+    "observation": "FlattenOps 会话中，i1 守卫的候选测试函数未触发 pass 守卫（5 步 + 2 次重建），原因是 VF 身份判定依赖未成文启发式：private 且函数名含 _fused_ 子串；同一会话还发现生产方追加 _fused 而消费方检查 _fused_ 的既有不一致（@X_fused 从未被匹配）。该隐式约定既无文档也不在 review memory 中。",
+    "manual_source_search": {
+      "performed": true,
+      "reason": "VF 命名/属性约定只能从 VFFusionOutliner 与 FlattenOps 源码反推。"
+    },
+    "possible_gap": {
+      "category": "documentation",
+      "statement": "VF 身份命名契约应文档化（或以 hivm::isVF/vector_function 属性为唯一事实源），并进入 pass review memory；否则每次守卫类修改都要重新踩一次命名启发式。"
+    },
+    "evidence": [
+      {
+        "file": "bishengir/lib/Dialect/HFusion/Transforms/FlattenOps.cpp",
+        "lines": "102-126"
+      },
+      {
+        "file": "bishengir/lib/Dialect/Analysis/VFFusion/VFFusionOutliner.cpp",
+        "lines": "48"
+      }
+    ],
+    "sensitivity": {
+      "contains_sensitive_content": false
+    }
+  }
+}

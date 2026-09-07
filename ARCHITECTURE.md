@@ -23,7 +23,7 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 |---|---|
 | `preset.yml` | preset 元数据(name/description) |
 | `agent.cordis.yml` | **agent-plane 组成**:挂载哪些插件/工具/提示段(第 2 章) |
-| `compiler-inspect-v3-1.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章) |
+| `compiler-inspect-v3-2.cjs` | 本地 Cordis 插件:always-on 核心策略段 + `compiler_inspect` 工具(第 3 章) |
 | `compiler-inspect-driver.mjs` | 检索驱动,被插件 in-process import(第 4 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
 | `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的仓库契约模板(第 6 章) |
@@ -64,13 +64,13 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 | plan mode | group(isolate `planMode`)+ `plan-mode`(完整 plan-mode 提示段:先探索后计划、计划 decision-complete、`exit_plan_mode` 收口等) | 计划状态天然 per-agent |
 | compaction | group(isolate `compaction` + `toolResultPruner`)+ `compaction-basic`(**实验性早期压缩策略**,见第 7 章)+ `command-compact` + `tool-result-pruner`(8192/4096/1024) | `tokenMeter` 留在 host;pruner 必须与 compaction-basic 同 realm(经 `ctx.get` 读取) |
 | delegation | group(isolate `workflowEngine`)+ `tool-subagent`(spawn,continuable)、`tool-subagent-fork`(fork,continuable)、`tool-subagent-list-agents`、`workflow-worker-thread`(provider spawn)、`tool-workflow`、`tool-ralph`(maxRounds 64);codex/claude-code 子代理行**存在但 disabled**(需安装对应 Bundle) | subagents 注册表留在 host;`tool-subagent-report` 是 host-plane(continuable setup 单例) |
-| compiler | `compiler-inspect` → `./compiler-inspect-v3-1.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
+| compiler | `compiler-inspect` → `./compiler-inspect-v3-2.cjs` | 只贡献提示段 + 工具,消费 host 服务,不发布服务,无 realm(第 3 章) |
 | 其余 | `tool-ask-user`、`tool-todo`(`allowParallelInProgress: true`)、`tool-web`(`fetch: false`,`searchTimeoutMs: 60000`) | web 服务与搜索 provider 在 host |
 
 **Preset 明确不挂载**:LSP、hooks、notebook/view 等非标准工具;web fetch 被关闭(仅保留 search)。
 条件禁用走 `!!js` 表达式(仅 shell 两行,按平台二选一)。
 
-## 3. compiler-inspect 插件(compiler-inspect-v3-1.cjs)
+## 3. compiler-inspect 插件(compiler-inspect-v3-2.cjs)
 
 `exports.name = 'compiler-inspect'`,`exports.inject = ['tools', 'systemPrompt']`。`apply(ctx)` 做两件事:
 
@@ -100,15 +100,15 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 - 工具描述与策略第 5 条同口径(何时先调、何时不适用)。
 - 参数与输出均为 JSON Schema 强约束(输出 `additionalProperties: false`);`render` 把结构化 bundle
   渲染为分节文本。
-- **driver in-process 运行**:`import(new URL('./compiler-inspect-driver.mjs?v=1.1', file://__filename))`。
+- **driver in-process 运行**:`import(new URL('./compiler-inspect-driver.mjs?v=1.2', file://__filename))`。
   设计理由:driver 是固定、只读(git/rg)、参数不落 shell 的脚本,in-process 比 shell/沙箱往返少一类
   失败模式且不损失封闭性。60s AbortController 兜底,并透传工具调用的 abort 信号。
-- URL 的 `?v=1.1` 用于击穿 host 进程的 ESM 模块缓存(见第 9 章)。
+- URL 的 `?v=1.2` 用于击穿 host 进程的 ESM 模块缓存(见第 9 章)。
 
-> 命名澄清:文件名 `v3-1` 是插件文件的演进代号;driver 内 `VERSION = '1.1'` 是检索协议版本,
-> README 与工具描述均称 v1.1。两套编号并存,勿混淆。
+> 命名澄清:文件名 `v3-2` 是插件文件的演进代号;driver 内 `VERSION = '1.2'` 是检索协议版本,
+> README 与工具描述均称 v1.2。两套编号并存,勿混淆。
 
-## 4. `compiler_inspect` 接口契约(v1.1)
+## 4. `compiler_inspect` 接口契约(v1.2)
 
 ### 4.1 输入参数
 
@@ -117,35 +117,48 @@ DeepSeek Harness 中,host 组成(`base.cordis.yml` + `web.cordis.yml`)拥有 pre
 | `repo_root` | string | `process.cwd()` | 仓库根;缺 `.git` 时回退 `git rev-parse --show-toplevel`(子目录锚点可用) |
 | `files` | string[] | `[]` | 文件锚点;根外路径被过滤,绝对路径转为相对展示 |
 | `symbols` | string[] | `[]` | 符号锚点;去重后截前 12 个 |
-| `history_window` | int | 6 | git log 窗口,1–30,越界抛错 |
+| `history_window` | int | 6 | git log 窗口,1–30(schema 声明 min/max);越界值**钳制**到边界并在 `unresolved` 记录,不再使整次调用失败 |
 | `include_tests` | bool | true | 是否检索覆盖测试 |
 | `include_diff` | bool | true | 是否含工作树 `git diff --stat` |
 | `contract_test_dirs` | string[] | `[]` | **来自 Repository Contract** 的测试目录;替换默认 test glob |
 | `exclude_dirs` | string[] | `[]` | 追加到默认排除目录(默认排除:`.git`、`node_modules`、`dist`、`build`、`out`、`target`、`.cache`、`__pycache__`、`.venv`/`venv`、`.mypy_cache`、`.pytest_cache`、`.cxx`) |
+| `log_files` | string[] | `[]` | **v1.2** 编译/pipeline 日志路径(≤4,相对 repo_root);触发有界日志取证 |
+| `log_passes` | string[] | `[]` | **v1.2** 感兴趣的 pass 名(≤8;精确匹配优先,否则按首个子串命中) |
+| `log_occurrence` | int | 1 | **v1.2** 取每个 pass 的第 N 个 dump |
+| `log_slice_lines` | int | 60 | **v1.2** 每个切片的最大行数(5–400;切片在下一个 dump 标记处提前截断) |
 
 ### 4.2 检索管线(单次调用、一次往返)
 
 1. Git 状态:`branch --show-current`、`status --short`(前 8 条);非 Git 工作树记入 `unresolved`。
-2. **定义检索**(batched):符号集合拼成一条 ripgrep 交替正则,两遍——关键字声明形
-   (`class|struct|union|enum|... name` / `name\s*[:=]`),`--max-count 6`、`-C 2` 上下文。
+2. **定义检索**(batched):符号集合拼成一条 ripgrep 交替正则,单遍——关键字声明形
+   (`class|struct|union|enum|... name` / `name\s*[:=]`),**v1.2 增加 C/C++ 附加花括号函数定义形
+   `type... name(args) {`**(v1.1 对纯 C/C++ 函数定义全部 miss,定义行只能落在 References 节),
+   `--max-count 6`、`-C 2` 上下文。
    排序规则:锚点文件内 match 行 > 其他文件 match 行 > 锚点文件上下文行 > 其他上下文行,同秩稳定。
    取前 10 条(`MAX_DEFINITION_ITEMS`)。
 3. **引用检索**:`\b(symbols)\b` 单遍 batched,`--max-count 8`,取前 12 条。
-4. **Vendored 回退**:仅当符号在非 vendored 树零匹配时,在 `third_party|3rdparty|vendor|external|submodules`
-   内补查,取前 4 条;并写入 `unresolved` 提示"证据可能来自 vendored 树"。include/vendor glob 顺序利用
-   ripgrep last-glob-wins 保证 vendored 默认被排除。
+4. **Vendored 回退**:三个触发条件——(a) 符号在非 vendored 树零匹配(v1.1 行为);(b) **v1.2**
+   非 vendored 树无定义形命中(ABI 链条的 vendored 半边此前无工具覆盖),此时用定义形模式检索;
+   (c) **v1.2** 锚点文件位于 vendored 树内。取前 4 条;并写入 `unresolved` 说明触发原因。
+   include/vendor glob 顺序利用 ripgrep last-glob-wins 保证 vendored 默认被排除。
 5. **测试匹配**:`contract_test_dirs` 非空则用它,否则默认 glob(`**/*test*` 等);取前 8 条。
 6. **工作树变更**:`git diff --stat`(锚点文件或全仓库),取前 12 条。
 7. **历史**:`git log -N --format='%h %s' -- <files| .>`;另对前 3 个符号做 `-S` pickaxe(各取 4 条)。
-8. **Unresolved 诊断**:无显式锚点、符号零匹配(拼写/生成代码/实现专属名)、vendored 命中等,显式列出。
+8. **日志取证(v1.2)**:`log_files` 非空时,逐文件扫描 `IR Dump After/Before <pass>` 标记,产出
+   每 pass 计数 + 首行号索引(≤24 条/pass 名)、`log_passes` × `log_occurrence` 寻址的有界 dump
+   切片(单切片 ≤`log_slice_lines` 行,行 ≤280 字符,总量 ≤8K 字符),两份日志时追加 pass 序列
+   diff(逐 pass 计数差、首个分歧 dump 序号、公共 pass 首现行号对齐)。机械行号运算,不解读 IR。
+9. **Unresolved 诊断**:无显式锚点、符号零匹配(拼写/生成代码/实现专属名)、vendored 命中及触发
+   原因、日志文件缺失/无匹配 pass、history_window 钳制等,显式列出。
 
 ### 4.3 预算与输出
 
 - 行级:每条 ≤280 字符(`MAX_LINE_CHARS`);每节 ≤12 条(`MAX_ITEMS`,定义节 10)。
-- **总量硬预算 20000 字符**(`MAX_TOTAL_CHARS`):超限时按 References → History → Tests → Definitions
-  优先级对最大节对半裁剪,`budget.truncated = true`。
+- **总量硬预算 20000 字符**(`MAX_TOTAL_CHARS`):超限时按 References → History → Tests → Definitions → Logs
+  优先级对最大节对半裁剪,`budget.truncated = true`;日志切片文本另有 8K 字符子预算。
 - 输出 schema:`repository{root,branch,dirty}`、`anchors{files,symbols}`、`definitions[]`、
-  `references[]`、`vendored_matches[]`、`tests[]`、`changes[]`、`history[]`、`unresolved[]`、
+  `references[]`、`vendored_matches[]`、`tests[]`、`changes[]`、`history[]`、**`logs{files[],slices[],slice_items[],diff|null,truncated}`(v1.2)**、
+  `unresolved[]`、
   `budget{max_items_per_section, max_line_chars, total_budget_chars, truncated, version}`。
 - **语义定位**:只检索确定性代码事实;不推断构建/环境命令;bundle 各节是**线索不是结论**
   (skill 明言:定义行只是语法 + 两行上下文,不足以决策时才打开文件)。
@@ -161,14 +174,18 @@ frontmatter:`name: compiler-development`;描述面向 Triton/MLIR/LLVM 类仓库
 
 1. **锚点工作法**:先定义/调用方/语义/测试/scoped history,证据足够即停(额外探索是花销不是安全)。
    调 `compiler_inspect` 时把 Contract 的测试目录传 `contract_test_dirs`、vendored/子模块/生成目录传
-   `exclude_dirs`——契约约束进入 bundle 而不复制契约。bundle 是线索;`Vendored matches` 或 truncation
-   标记 = 证据不完整,应收窄锚点而非扩大搜索。"最近 N commits"是搜索地平线。
+   `exclude_dirs`,**同一会话的后续调用必须复用这些契约参数**;bundle 的 `Unresolved` 报告锚点未命中时,
+   先修正或删除该锚点再扩大搜索。**v1.2**:编译/pipeline 日志经 `log_files`/`log_passes` 走有界取证,
+   不向 context 流式倾倒原始日志。契约约束进入 bundle 而不复制契约。bundle 是线索;`Vendored matches`
+   或 truncation 标记 = 证据不完整,应收窄锚点而非扩大搜索。"最近 N commits"是搜索地平线。
 2. **Repository Contract**:权威次序 = 人类契约 > 项目指令 > 源码 > 相关历史 > 推断。先读契约再做任何
    环境/构建/测试发现;契约命令只在用点验证,不换成推断流程。无契约时只发现本任务所需事实。
    **绝不持久化推断出的操作事实**;有用 workaround 以候选契约更新提议给人;仅当人类要求时才用模板起草。
 3. **Checkpoint**:一行 `Decision; Evidence; Uncertainty; Patch implication`,在三个时机取——设计敏感
-   编辑前、大型发现移交实现时、结论稳定后的长验证前。目的是**在 compaction 中存活**(摘要保留工程状态
-   而原始证据被遮蔽)。是证据边界不是数据库;琐碎读取后不发仪式性 checkpoint。
+   编辑前、大型发现移交实现时、结论稳定后的长验证前。**v1.2**:长实现/调试循环中,工作假设每变更一次
+   重取一行;只存在于 reasoning 中的决策不算 checkpoint;设计定稿的 checkpoint 须把已声明契约与实现逐条
+   对账;长推理落盘为 checkpoint/结构化笔记,不做超大单块思考。目的是**在 compaction 中存活**(摘要保留
+   工程状态而原始证据被遮蔽)。是证据边界不是数据库;琐碎读取后不发仪式性 checkpoint。
 4. **验证**:先窄验证,有理由才跑仓库规定的更广检查。失败四分类;疑似无关阻塞最多一次聚焦对照实验,
    证明无关后记录(阻塞、证据、它阻止了什么验证)并继续不受影响的检查;不为凑绿改环境/依赖文件。
 5. **混合/域外工作**:混合请求按内部工作包分组,证据充分的包先行。Harness/preset/Cordis/Web/运行时
@@ -215,7 +232,7 @@ token 记账(input/output/cacheRead)、**峰值请求上下文及 step**、首�
 ## 9. 运维细节(热更新)
 
 - host 进程按文件 URL 缓存 preset 插件模块,生存期为进程生命周期:
-  - 改 `compiler-inspect-v3-1.cjs` → **重命名文件**并同步组成行;
+  - 改 `compiler-inspect-v3-2.cjs` → **重命名文件**并同步组成行;
   - 改 `compiler-inspect-driver.mjs` → **bump 插件 import 的 `?v=` 查询**;
   - 组成 YAML(行、config、skill 目录)每次会话挂载时重读,无需重启。
 
@@ -370,7 +387,7 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
    工具域,留在 Compiler Dev 会话合规;只有修改 DeepSeek Harness/Cordis/DSH Web 时才触发 Creator-mode
    移交。
 6. **policy/skill 文本的更新落点**:若采纳路由方案,需同步改三处且保持不重复——核心策略
-   (compiler-inspect-v3-1.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
+   (compiler-inspect-v3-2.cjs 的 CORE_POLICY,注意热更新需重命名文件)、skill
    (skills/compiler-development/SKILL.md)、以及目标仓库契约;harness 侧 conventions.md 是其仓库的
    事实源,preset 侧不应复制其内容。
 
@@ -386,9 +403,11 @@ Token 纪律:每条命令返回紧凑 JSON,带 `file:line` 指针,**永不返回
 
 ### 附录:事实来源
 
-- Preset:`preset.yml`、`agent.cordis.yml`(307 行,含归属理由注释)、`compiler-inspect-v3-1.cjs`(77 行)、
-  `compiler-inspect-driver.mjs`(321 行)、`skills/compiler-development/SKILL.md`(37 行)、
-  `REPOSITORY_CONTRACT_TEMPLATE.md`(65 行)、`scripts/analyze-session.mjs`(367 行)、`README.md`。
+- Preset:`preset.yml`、`agent.cordis.yml`(307 行,含归属理由注释)、`compiler-inspect-v3-2.cjs`(112 行)、
+  `compiler-inspect-driver.mjs`(548 行)、`skills/compiler-development/SKILL.md`(37 行)、
+  `REPOSITORY_CONTRACT_TEMPLATE.md`(65 行)、`scripts/analyze-session.mjs`(367 行)、
+  `scripts/test/compiler-inspect-driver.test.mjs`、`README.md`、`analysis/2026-09-06-case-feedback-analysis.md`
+  (案例反馈分析报告,本次 v1.2 改动的依据)。
 - Harness:`docs/architecture/{overview,query-api,schema,status}.md`、`docs/workflows/{repo-map,pass-analysis,pipeline-audit}.md`、
   `docs/goal.md`、`adapters/{README,deepseek-harness/README,deepseek-harness/conventions}.md`、
   `adapters/deepseek-harness/goal-templates/pass-analysis-goal.md`、`adapters/zcode/`、
