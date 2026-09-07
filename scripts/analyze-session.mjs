@@ -24,6 +24,9 @@ import { constants, zstdDecompressSync } from 'node:zlib'
 
 const EDIT_TOOL_NAMES = new Set(['edit', 'write', 'str_replace_editor'])
 const COMPACT_INSPECT_TOOL = 'compiler_inspect'
+const COMPACT_KNOWLEDGE_TOOL = 'compiler_knowledge'
+/** Heuristic for "manual source search" bash calls: grep/rg/awk/find verbs. */
+const BASH_SEARCH_VERBS = /(^|[\s;&|(])\b(grep|rg|awk|find)\b/
 const LARGE_RESULT_BYTES = 8192
 const LARGEST_LISTED = 5
 const ZSTD_MAGIC = 0xFD2FB528
@@ -129,6 +132,17 @@ function textOfToolResult(event) {
   return text
 }
 
+/** Parse a tool call's `arguments` JSON string; malformed input yields undefined. */
+function parseArguments(raw) {
+  if (typeof raw !== 'string') return undefined
+  try {
+    const value = JSON.parse(raw)
+    return value !== null && typeof value === 'object' ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Summarize one parsed record stream into the objective metrics object. */
 export function analyzeRecords(records) {
   const result = {
@@ -144,6 +158,10 @@ export function analyzeRecords(records) {
     toolCallsByName: {},
     compilerInspectCalls: 0,
     firstCompilerInspectStep: undefined,
+    compilerKnowledgeCalls: 0,
+    firstCompilerKnowledgeStep: undefined,
+    knowledgeByCommand: {},
+    bashGrepLikeCalls: 0,
     skillLoadFailures: 0,
     cacheReadTokens: 0,
     inputTokens: 0,
@@ -259,6 +277,20 @@ export function analyzeRecords(records) {
           result.compilerInspectCalls += 1
           if (result.firstCompilerInspectStep === undefined) result.firstCompilerInspectStep = data?.step
         }
+        if (data.name === COMPACT_KNOWLEDGE_TOOL) {
+          result.compilerKnowledgeCalls += 1
+          if (result.firstCompilerKnowledgeStep === undefined) result.firstCompilerKnowledgeStep = data?.step
+          const args = parseArguments(data?.arguments)
+          if (typeof args?.command === 'string') {
+            result.knowledgeByCommand[args.command] = (result.knowledgeByCommand[args.command] ?? 0) + 1
+          }
+        }
+        if (data.name === 'bash') {
+          const args = parseArguments(data?.arguments)
+          if (typeof args?.command === 'string' && BASH_SEARCH_VERBS.test(args.command)) {
+            result.bashGrepLikeCalls += 1
+          }
+        }
         if (EDIT_TOOL_NAMES.has(data.name) && result.firstEditWriteStep === undefined) {
           result.firstEditWriteStep = data?.step
         }
@@ -319,6 +351,9 @@ export function formatReport(result) {
     lines.push(`  ${name}: ${count}`)
   }
   lines.push(`compiler_inspect calls: ${fmtInt(result.compilerInspectCalls)}${result.firstCompilerInspectStep !== undefined ? ` (first at step ${result.firstCompilerInspectStep})` : ''}`)
+  const knowledgeBreakdown = Object.entries(result.knowledgeByCommand).map(([command, count]) => `${command}: ${count}`).join(', ')
+  lines.push(`compiler_knowledge calls: ${fmtInt(result.compilerKnowledgeCalls)}${result.firstCompilerKnowledgeStep !== undefined ? ` (first at step ${result.firstCompilerKnowledgeStep})` : ''}${knowledgeBreakdown ? ` [${knowledgeBreakdown}]` : ''}`)
+  lines.push(`bash grep-like search calls (heuristic): ${fmtInt(result.bashGrepLikeCalls)}`)
   lines.push(`skill load failures: ${fmtInt(result.skillLoadFailures)}`)
   lines.push(`first edit/write step: ${result.firstEditWriteStep ?? 'none'}`)
   lines.push('')

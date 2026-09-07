@@ -99,3 +99,15 @@ test('loadRecords decodes a zstd artifact', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('knowledge queries are counted per command and separated from grep-like bash', () => {
+  const result = analyzeRecords(parseRecords(loadRecords(`${FIXTURE_DIR}knowledge-session.jsonl`)))
+  assert.equal(result.compilerKnowledgeCalls, 2)
+  assert.equal(result.firstCompilerKnowledgeStep, 1)
+  assert.deepEqual(result.knowledgeByCommand, { review: 1, 'finding-impact': 1 })
+  assert.equal(result.bashGrepLikeCalls, 1, 'grep counts, ninja/docker build does not')
+  assert.equal(result.compilerInspectCalls, 0)
+  const report = formatReport(result)
+  assert.match(report, /compiler_knowledge calls: 2 \(first at step 1\) \[review: 1, finding-impact: 1\]/)
+  assert.match(report, /bash grep-like search calls \(heuristic\): 1/)
+})

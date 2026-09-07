@@ -288,6 +288,15 @@
 - id: compiler-inspect
   name: ./compiler-inspect-v3-2.cjs
 
+# Knowledge-first routing over the mlir-compiler-harness repomap queries
+# (adapters/compiler-dev contract): `compiler_knowledge` tool + always-on task
+# routing section. Same ownership shape as compiler-inspect: model-facing tool
+# and prompt only, consumes host services, publishes no service, no realm.
+# The driver auto-refreshes a stale index before answering (contract rule) and
+# appends non-sensitive query records to analysis/feedback/queries/ (gitignored).
+- id: compiler-knowledge
+  name: ./compiler-knowledge-v1.cjs
+
 # ── remaining model-facing rows ─────────────────────────────────────────────
 
 - id: tool-ask-user

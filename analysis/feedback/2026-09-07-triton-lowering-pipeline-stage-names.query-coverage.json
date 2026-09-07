@@ -1,0 +1,28 @@
+{
+  "feedback": {
+    "schema_version": 1,
+    "created_at": "2026-09-07",
+    "task": {
+      "kind": "pipeline-audit",
+      "target": "pipeline:ttir_to_linalg"
+    },
+    "query": {
+      "command": "pipeline-stages",
+      "args": {"name": "ttir_to_linalg"}
+    },
+    "observation": "Knowledge-integration validation on triton-ascend: pipeline-stages returned the AST-confirmed 15-stage order for ttir_to_linalg (and 10 stages for make_ttir) with exact file:line evidence (third_party/ascend/backend/compiler.py L169-L180, L237-L272), so the lowering order needed no source search. make_ttir reported 9 of 10 stages as unresolved binding names (add_inliner, add_combine, ...); the contract honestly refuses to guess them, so one bounded read of the pointed file region was needed to attach names to the order. evidence on the pipeline node returned 16 evidence rows and 5 history entries.",
+    "manual_source_search": {
+      "performed": true,
+      "reason": "One bounded read of the pointed region (compiler.py L160-L182) to resolve the stage binding names the query reports as unresolved diagnostics — verification of pointed evidence, not discovery."
+    },
+    "possible_gap": {
+      "category": "query-coverage",
+      "statement": "pipeline-stages could resolve add_* binding names to stage labels when the binding is a direct passes.<ns>.add_x(pm) call in the same composition; today the order is returned but names stay unresolved, forcing one extra read of the pointed region per audit."
+    },
+    "evidence": [
+      {"file": "third_party/ascend/backend/compiler.py", "lines": "169-180"},
+      {"file": "third_party/ascend/backend/compiler.py", "lines": "237-272"}
+    ],
+    "sensitivity": {"contains_sensitive_content": false}
+  }
+}

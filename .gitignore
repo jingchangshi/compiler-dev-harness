@@ -1,1 +1,5 @@
 cases/
+# Runtime auto-observation of knowledge queries (non-sensitive JSONL, per
+# adapters/compiler-dev/feedback-schema.md). Curated feedback artifacts stay
+# committed; this stream does not.
+analysis/feedback/queries/
