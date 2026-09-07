@@ -34,8 +34,15 @@ TEAM / TARGET REPOSITORY                     compiler-dev-harness
   policy for one target repository: `compiler_inspect` contract parameters
   (`exclude_dirs`, `contract_test_dirs`), harness tool disciplines, and
   repository conventions the team does not track.
-- **`contracts/<Profile>/AGENTS.local.md`** is host-specific personal fact
-  material (toolchain paths, accelerator availability, workarounds).
+- **Host-local facts** live per server:
+  `contracts/<Profile>/hosts/<host-id>/AGENTS.local.md` (+ optional `host.json`
+  with `host` id and `hostnames` aliases). Preparation selects the source by
+  the current machine's hostname, or explicitly via `--host <id>`; a legacy
+  profile-level `AGENTS.local.md` still works for single-host layouts (both
+  layouts at once is an error). Host facts are **human-provided** —
+  `contracts/HOST_FACTS_TEMPLATE.md` is the minimal required set, preparation
+  refuses files that still contain `REQUIRED:` placeholders, and materialized
+  values are never invented by the agent.
 - **`<TARGET>/AGENTS.local.md`** is the only harness artifact inside the target
   worktree: a generated copy of (profile + local facts) with a managed header
   (`compiler-dev-harness:managed-v1`, profile name, content SHA-256). Ownership
@@ -52,14 +59,16 @@ name.
 ```sh
 node <harness>/scripts/prepare-workspace.mjs [target-root]   # materialize/update
 node <harness>/scripts/prepare-workspace.mjs --check [root]  # validate only
-# optional: --profile <name> forces a profile; --harness-root <dir> overrides
+# optional: --profile <name> / --host <id> force selection; --harness-root overrides
 ```
 
 The script resolves the actual Git worktree root, identifies the profile
 (explicit `--profile` > remote-URL match > worktree basename; no/ambiguous
-match is a bounded failure), never touches the team `AGENTS.md`, materializes
-or updates the managed overlay (refusing unmanaged or hand-edited files), adds
-an idempotent marked entry to Git's per-repository `info/exclude`
+match is a bounded failure), selects the host facts source for **this**
+machine (explicit `--host` > hostname match against `hosts/<id>/host.json`),
+never touches the team `AGENTS.md`, materializes or updates the managed overlay
+(refusing unmanaged, hand-edited, or incomplete-`REQUIRED:` files), adds an
+idempotent marked entry to Git's per-repository `info/exclude`
 (**not** the team's tracked `.gitignore`), and validates via
 `git check-ignore`. Exit codes: 0 ok, 1 conflict/drift, 2 usage/unknown profile.
 
@@ -88,13 +97,39 @@ Cases for an existing `<TARGET>/AGENTS.local.md`:
   the command is idempotent, keeping the architecture ready for later
   automatic invocation.
 
+## Host facts: minimal template and new servers
+
+Host-local facts are the one instruction class that cannot come from a
+repository (team or harness): they describe a physical machine. Ownership and
+flow:
+
+1. **Human provides.** On a new server, copy `contracts/HOST_FACTS_TEMPLATE.md`
+   to `contracts/<Profile>/hosts/<host-id>/AGENTS.local.md`, replace every
+   `REQUIRED:` line with the actual value (or `NONE`), and add `host.json`
+   listing the machine's hostnames (include a container hostname if DSH also
+   runs inside one there). Keep `[USER MAY PROVIDE]` /
+   `[DSH MAY DETECT AT SESSION TIME]` placeholders where they are legal.
+2. **Agent may draft, never decides.** The propose-not-persist flow also works:
+   start a DSH session on the new server and ask the agent to detect the
+   environment and draft the file from the template; the human reviews,
+   corrects, and commits it. An agent never silently writes these facts.
+3. **Preparation validates and materializes.** A host source still containing
+   `REQUIRED:` is refused (exit 1) before anything is written; a hostname with
+   no matching source is refused (exit 2) with onboarding guidance — the
+   previous server's facts are never materialized onto a new machine.
+4. **Propagation.** After editing any harness source, re-run preparation in the
+   target worktree; the managed header's sources line names the exact host
+   source that produced the deployed file.
+
 ## Current profiles
 
 - `AscendNPU-IR-Dev/` — profile for the `gitcode.com/Ascend/AscendNPU-IR`
   repository and its personal forks (local checkout directory currently named
   `AscendNPU-IR-Dev`; the profile name is a stable label, and identity is
   matched from remote URLs first because clones and worktrees may use any
-  local directory name).
+  local directory name). Host facts: `hosts/user12364/` (this server; CANN,
+  toolchain repair, conda `triton-py311`, Ascend950PR, bishengir-compile/ccec
+  toolkit locations).
 
 ## Migration record (2026-09-07)
 

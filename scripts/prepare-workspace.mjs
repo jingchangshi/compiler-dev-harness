@@ -38,7 +38,7 @@
  *
  * Usage:
  *   node scripts/prepare-workspace.mjs [--check] [--profile <name>]
- *        [--harness-root <dir>] [<target-root>]
+ *        [--host <id>] [--harness-root <dir>] [<target-root>]
  *
  * Exit codes: 0 ok; 1 conflict/drift/validation failure; 2 usage/not a
  * repository/unknown or ambiguous profile.
@@ -58,6 +58,7 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { hostname as osHostname } from 'node:os'
 
 const HARNESS_MARKER = 'compiler-dev-harness:managed-v1'
 const OVERLAY_DEPLOY_NAME = 'AGENTS.local.md'
@@ -79,12 +80,17 @@ export function composeOverlayBody(profileBody, localBody) {
   return `${profileBody.trimEnd()}\n\n---\n\n${localBody.trimEnd()}\n`
 }
 
-export function renderManagedArtifact({ profileName, harnessRoot, body }) {
+export function renderManagedArtifact({
+  profileName,
+  harnessRoot,
+  body,
+  overlaySourceLabel = `{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}}`,
+}) {
   const header = [
     `<!-- ${HARNESS_MARKER}`,
     `profile: ${profileName}`,
     `content-sha256: ${sha256Hex(body)}`,
-    `sources: contracts/${profileName}/{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}} in compiler-dev-harness (${harnessRoot})`,
+    `sources: contracts/${profileName}/${overlaySourceLabel} + REPOSITORY_PROFILE.md in compiler-dev-harness (${harnessRoot})`,
     `regenerate: node ${join(harnessRoot, 'scripts', 'prepare-workspace.mjs')} <target-root>`,
     `-->`,
   ].join('\n')
@@ -225,6 +231,92 @@ export function applyExcludeEntry(content) {
   return { content: base + buildExcludeBlock(), action: 'added', detail: 'marked block appended' }
 }
 
+/**
+ * Resolve the host-local facts source for a profile. Two layouts:
+ * - per-host: `contracts/<Profile>/hosts/<id>/AGENTS.local.md` (+ optional
+ *   `host.json` with `host` id and `hostnames` aliases) — selected by explicit
+ *   `--host`, else by the current `os.hostname()`;
+ * - legacy: profile-level `AGENTS.local.md` (single-host, kept for older
+ *   layouts). Both layouts at once is an error: one source of truth.
+ */
+export function resolveHostSource(profile, { explicitHost = null, hostname = '' } = {}) {
+  const hostsDir = join(profile.dir, 'hosts')
+  const legacyPath = join(profile.dir, OVERLAY_SOURCE_NAME)
+  const hostsExist = existsSync(hostsDir)
+  const legacyExists = existsSync(legacyPath)
+  if (hostsExist && legacyExists) {
+    return {
+      ok: false,
+      kind: 'ambiguous-host-source',
+      detail: `both ${hostsDir} and profile-level ${legacyPath} exist; keep exactly one source of host facts`,
+    }
+  }
+  if (!hostsExist) {
+    if (!legacyExists) {
+      return {
+        ok: false,
+        kind: 'harness-layout',
+        detail: `no host facts source: expected ${hostsDir} or ${legacyPath}`,
+      }
+    }
+    return { ok: true, legacy: true, hostId: null, hostPath: legacyPath, matchedBy: 'profile-level (single host)' }
+  }
+  const hosts = []
+  for (const entry of readdirSync(hostsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const hostPath = join(hostsDir, entry.name, OVERLAY_SOURCE_NAME)
+    if (!existsSync(hostPath)) continue
+    let manifest = null
+    const manifestPath = join(hostsDir, entry.name, 'host.json')
+    if (existsSync(manifestPath)) {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    }
+    hosts.push({
+      hostId: manifest?.host ?? entry.name,
+      hostnames: (manifest?.hostnames ?? [manifest?.host ?? entry.name]).map(String),
+      hostPath,
+    })
+  }
+  if (explicitHost != null) {
+    const hit = hosts.find((h) => h.hostId === explicitHost)
+    return hit
+      ? { ok: true, legacy: false, ...hit, matchedBy: 'explicit' }
+      : {
+          ok: false,
+          kind: 'unknown-host',
+          detail: `--host ${explicitHost} matches no host source under ${hostsDir} (available: ${hosts.map((h) => h.hostId).join(', ') || 'none'}); create one from contracts/HOST_FACTS_TEMPLATE.md or pass an existing id`,
+        }
+  }
+  const byName = hosts.filter((h) => h.hostnames.includes(hostname))
+  if (byName.length === 1) return { ok: true, legacy: false, ...byName[0], matchedBy: 'hostname' }
+  if (byName.length > 1) {
+    return {
+      ok: false,
+      kind: 'ambiguous-host',
+      detail: `hostname "${hostname}" matches several host sources: ${byName.map((h) => h.hostId).join(', ')}; pass --host`,
+    }
+  }
+  return {
+    ok: false,
+    kind: 'no-host-match',
+    detail: `hostname "${hostname}" matches no host source under ${hostsDir} (available: ${hosts.map((h) => h.hostId).join(', ') || 'none'}); new server: copy contracts/HOST_FACTS_TEMPLATE.md to ${hostsDir}/<id>/AGENTS.local.md, fill every REQUIRED: line, add host.json listing its hostnames, or pass --host <id>`,
+  }
+}
+
+/**
+ * A filled host-facts file must not leave template placeholders behind. The
+ * template marks must-fill fields with `REQUIRED:`; legal session-time
+ * placeholders like `[USER MAY PROVIDE]` are unaffected.
+ */
+export function validateHostFacts(body) {
+  const missing = body
+    .split('\n')
+    .map((text, i) => ({ line: i + 1, text }))
+    .filter((l) => l.text.includes('REQUIRED:'))
+    .slice(0, 5)
+  return { ok: missing.length === 0, missing }
+}
+
 // ── git / filesystem boundary (narrow, the only side effects) ───────────────
 
 function git(root, args, { allowFailure = false } = {}) {
@@ -301,10 +393,25 @@ function readOverlayState(root) {
   return { state: 'present', deployPath, existing: readFileSync(deployPath, 'utf8') }
 }
 
-function loadProfileSources(profile) {
+function loadOverlaySources(profile, hostSelection) {
   const profileBody = readFileSync(join(profile.dir, PROFILE_SOURCE_NAME), 'utf8')
-  const localBody = readFileSync(join(profile.dir, OVERLAY_SOURCE_NAME), 'utf8')
-  return { profileBody, localBody }
+  const hostBody = readFileSync(hostSelection.hostPath, 'utf8')
+  const facts = validateHostFacts(hostBody)
+  if (!facts.ok) {
+    return {
+      error: {
+        kind: 'host-facts-incomplete',
+        detail: `${hostSelection.hostPath} still contains template placeholders at lines ${facts.missing.map((m) => m.line).join(', ')} — fill every REQUIRED: line (a value or NONE) before materializing`,
+      },
+    }
+  }
+  return {
+    profileBody,
+    hostBody,
+    overlaySourceLabel: hostSelection.legacy
+      ? `{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}}`
+      : `hosts/${hostSelection.hostId}/${OVERLAY_SOURCE_NAME}`,
+  }
 }
 
 function exclusionState(root) {
@@ -329,6 +436,7 @@ export function prepareWorkspace(options) {
   const {
     check = false,
     explicitProfile = null,
+    explicitHost = null,
     harnessRoot: harnessRootOption = null,
     target = process.cwd(),
   } = options
@@ -360,17 +468,28 @@ export function prepareWorkspace(options) {
   lines.push(`profile:         ${profile.name} (matched by ${matchedBy})`)
   lines.push(`team ${teamContractStatus(root)}`)
 
+  const hostSelection = resolveHostSource(profile, {
+    explicitHost,
+    hostname: osHostname(),
+  })
+  if (!hostSelection.ok) return fail(2, hostSelection.kind, hostSelection.detail)
+  lines.push(
+    `host facts:      ${hostSelection.legacy ? 'profile-level source (single host)' : `${hostSelection.hostId} (matched by ${hostSelection.matchedBy})`}`,
+  )
+
   let sources
   try {
-    sources = loadProfileSources(profile)
+    sources = loadOverlaySources(profile, hostSelection)
   } catch (error) {
     return fail(2, 'harness-layout', `profile sources missing under ${profile.dir}: ${String(error.message ?? error)}`)
   }
-  const desiredBody = composeOverlayBody(sources.profileBody, sources.localBody)
+  if (sources.error) return fail(1, sources.error.kind, sources.error.detail)
+  const desiredBody = composeOverlayBody(sources.profileBody, sources.hostBody)
   const desiredArtifact = renderManagedArtifact({
     profileName: profile.name,
     harnessRoot,
     body: desiredBody,
+    overlaySourceLabel: sources.overlaySourceLabel,
   })
 
   // Classify before ANY mutation: conflicts must leave the worktree untouched.
@@ -378,10 +497,16 @@ export function prepareWorkspace(options) {
   if (overlay.state === 'not-a-regular-file') {
     return fail(1, 'overlay-conflict', `${overlay.deployPath}: ${overlay.detail}`)
   }
-  const classification = classifyOverlay(overlay.existing, {
+  let classification = classifyOverlay(overlay.existing, {
     profileName: profile.name,
     desiredBody,
   })
+  // A body-identical artifact with a stale provenance header (e.g. after the
+  // sources-label format changed) is still rewritten so the deployed header
+  // stays current; content digests are unaffected.
+  if (classification === 'up-to-date' && overlay.existing !== desiredArtifact) {
+    classification = 'stale'
+  }
 
   const exclusion = exclusionState(root)
   const exclusionOk =
@@ -448,15 +573,17 @@ export function prepareWorkspace(options) {
 function main(argv) {
   let check = false
   let explicitProfile = null
+  let explicitHost = null
   let harnessRoot = null
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--check') check = true
     else if (arg === '--profile') explicitProfile = argv[++i] ?? null
+    else if (arg === '--host') explicitHost = argv[++i] ?? null
     else if (arg === '--harness-root') harnessRoot = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') {
-      console.log('usage: node scripts/prepare-workspace.mjs [--check] [--profile <name>] [--harness-root <dir>] [<target-root>]')
+      console.log('usage: node scripts/prepare-workspace.mjs [--check] [--profile <name>] [--host <id>] [--harness-root <dir>] [<target-root>]')
       return 0
     } else if (arg.startsWith('--')) {
       console.error(`unknown option: ${arg}`)
@@ -464,12 +591,13 @@ function main(argv) {
     } else positional.push(arg)
   }
   if (positional.length > 1) {
-    console.error('usage: node scripts/prepare-workspace.mjs [--check] [--profile <name>] [--harness-root <dir>] [<target-root>]')
+    console.error('usage: node scripts/prepare-workspace.mjs [--check] [--profile <name>] [--host <id>] [--harness-root <dir>] [<target-root>]')
     return 2
   }
   const result = prepareWorkspace({
     check,
     explicitProfile,
+    explicitHost,
     harnessRoot,
     target: positional[0] ?? process.cwd(),
   })

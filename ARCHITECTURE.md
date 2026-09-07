@@ -263,9 +263,12 @@ frontmatter:`name: compiler-development`;描述面向 Triton/MLIR/LLVM 类仓库
   (`exclude_dirs`、`contract_test_dirs`)、harness 工具纪律、团队不跟踪的仓库约定
   (如 `hivmc/` A5 镜像树、pipeline 日志取证)。
 - **`AGENTS.local.md`**(harness 源 → 目标仓库物化):host 专属事实(工具链路径、
-  加速器、本机 workaround)。部署名固定为 `AGENTS.local.md`,因为这是 DeepSeek
-  Harness agent-instructions 加载器默认的 additive local-overlay 候选(base 之后
-  渲染,不遮蔽 base);源文件名与部署名的区分见 `contracts/README.md`。
+  加速器、本机 workaround),按服务器分源存放:`contracts/<Profile>/hosts/<host-id>/`
+  (+`host.json` 的 `hostnames` 别名),由人提供、模板为
+  `contracts/HOST_FACTS_TEMPLATE.md`,agent 只能起草、由人审定提交。部署名固定为
+  `AGENTS.local.md`,因为这是 DeepSeek Harness agent-instructions 加载器默认的
+  additive local-overlay 候选(base 之后渲染,不遮蔽 base);源文件名与部署名的区分
+  见 `contracts/README.md`。
 
 ### 6.2 workspace 准备(`scripts/prepare-workspace.mjs`)
 
@@ -278,6 +281,12 @@ node <harness>/scripts/prepare-workspace.mjs --check [target]  # 只校验
 - **身份识别**:显式 `--profile` > Git remote URL 匹配 > worktree 目录名;无匹配或
   歧义是有界失败(exit 2),绝不猜测。远程匹配是第一依据,因为 clone/worktree 的本地
   目录名可变(实测:远程仓库名 `AscendNPU-IR`,本地目录 `AscendNPU-IR-Dev`)。
+- **host facts 解析**:显式 `--host` > 当前 `os.hostname()` 与
+  `contracts/<Profile>/hosts/<id>/host.json` 的 `hostnames` 匹配;无匹配 = 有界失败
+  并附模板指引。**绝不让上一台服务器的 facts 物化到新机器**;host 事实只能由人提供
+  (或 agent 按 `contracts/HOST_FACTS_TEMPLATE.md` 起草、人审定后提交),含未填的
+  `REQUIRED:` 占位即拒绝物化;遗留的单机 profile 级 `AGENTS.local.md` 仍受支持,
+  与 `hosts/` 并存则报错(单一事实源)。
 - **物化策略**:`REPOSITORY_PROFILE.md` + `AGENTS.local.md` 合成为**生成的托管副本**
   (非 symlink):一个部署文件必须承载两个 harness 源;副本自包含,不会因 harness
   checkout 移动而悬空;新鲜度由重跑 prepare 确定性地处理。托管头含

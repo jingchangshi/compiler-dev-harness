@@ -29,6 +29,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import {
@@ -46,19 +47,39 @@ import {
 const SCRIPT = resolve(new URL('../prepare-workspace.mjs', import.meta.url).pathname)
 const GIT_IDENTITY = ['-c', 'user.email=test@example.com', '-c', 'user.name=test', '-c', 'commit.gpgsign=false']
 
-function makeHarnessFixture({ manifest = null } = {}) {
+function makeHarnessFixture({ hosts = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wsprep-harness-'))
   const dir = join(root, 'contracts', 'FixProfile')
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'profile.json'),
-    JSON.stringify(manifest ?? { profile: 'FixProfile', match: { remoteSubstrings: ['fixrepo.example/fix-target.git'] } }),
+    JSON.stringify({ profile: 'FixProfile', match: { remoteSubstrings: ['fixrepo.example/fix-target.git'] } }),
   )
   writeFileSync(
     join(dir, 'REPOSITORY_PROFILE.md'),
     '# Fix Repository Profile (harness-owned)\n\nexclude_dirs: fixture-x\n',
   )
-  writeFileSync(join(dir, 'AGENTS.local.md'), '# Fix Local Host Facts\n\nconda: fix-env\n')
+  if (hosts == null) {
+    writeFileSync(join(dir, 'AGENTS.local.md'), '# Fix Local Host Facts\n\nconda: fix-env\n')
+  } else {
+    const hostDir = join(dir, 'hosts', hosts.hostId)
+    mkdirSync(hostDir, { recursive: true })
+    writeFileSync(
+      join(hostDir, 'AGENTS.local.md'),
+      hosts.incomplete
+        ? '# Fix Local Host Facts\n\nCANN: REQUIRED: fill me\n'
+        : '# Fix Local Host Facts\n\nconda: fix-env\n',
+    )
+    if (hosts.hostnames) {
+      writeFileSync(
+        join(hostDir, 'host.json'),
+        JSON.stringify({ host: hosts.hostId, hostnames: hosts.hostnames }),
+      )
+    }
+    if (hosts.alsoProfileLevel) {
+      writeFileSync(join(dir, 'AGENTS.local.md'), 'duplicate source\n')
+    }
+  }
   return root
 }
 
@@ -363,6 +384,70 @@ test('bare repositories and non-repositories are rejected with usage errors', ()
   rmSync(harnessRoot, { recursive: true, force: true })
   rmSync(bare, { recursive: true, force: true })
   rmSync(plain, { recursive: true, force: true })
+})
+
+test('per-host source: hostname selects the host facts and the header names it', () => {
+  const harnessRoot = makeHarnessFixture({ hosts: { hostId: 'FixHost', hostnames: [hostname()] } })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /host facts:      FixHost \(matched by hostname\)/)
+  const overlay = readFileSync(join(target, 'AGENTS.local.md'), 'utf8')
+  assert.match(overlay, /hosts\/FixHost\/AGENTS\.local\.md/)
+  assert.match(overlay, /Fix Local Host Facts/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('explicit --host overrides hostname matching; unknown host fails bounded', () => {
+  const harnessRoot = makeHarnessFixture({ hosts: { hostId: 'FixHost', hostnames: ['other-box'] } })
+  const target = initTargetRepo()
+  const ok = runCli(['--harness-root', harnessRoot, '--host', 'FixHost', target])
+  assert.equal(ok.status, 0, ok.stderr)
+  assert.match(ok.stdout, /host facts:      FixHost \(matched by explicit\)/)
+  const missing = runCli(['--harness-root', harnessRoot, '--host', 'Ghost', target])
+  assert.equal(missing.status, 2)
+  assert.match(missing.stderr, /unknown-host/)
+  assert.match(missing.stderr, /HOST_FACTS_TEMPLATE\.md/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('a hostname with no matching host source is a bounded failure with onboarding guidance', () => {
+  const harnessRoot = makeHarnessFixture({ hosts: { hostId: 'FixHost', hostnames: ['other-box'] } })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /matches no host source/)
+  assert.match(result.stderr, /HOST_FACTS_TEMPLATE\.md/)
+  assert.equal(exists(join(target, 'AGENTS.local.md')), false, 'no overlay may be materialized from another host facts')
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('incomplete host facts (leftover REQUIRED:) are refused before materializing', () => {
+  const harnessRoot = makeHarnessFixture({ hosts: { hostId: 'FixHost', hostnames: [hostname()], incomplete: true } })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /host-facts-incomplete/)
+  assert.match(result.stderr, /REQUIRED: line/)
+  assert.equal(exists(join(target, 'AGENTS.local.md')), false)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('profile-level and hosts/ sources at once is an error, never a silent pick', () => {
+  const harnessRoot = makeHarnessFixture({
+    hosts: { hostId: 'FixHost', hostnames: [hostname()], alsoProfileLevel: true },
+  })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /ambiguous-host-source/)
+  assert.match(result.stderr, /exactly one source/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
 })
 
 function exists(path) {
