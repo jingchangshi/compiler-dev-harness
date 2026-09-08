@@ -1,0 +1,36 @@
+{
+  "artifact": "subject",
+  "schema_version": 1,
+  "subject_id": "memref-alias-state-class",
+  "subject_type": "class",
+  "name": "MemrefAliasAnalysisState",
+  "repository": "AscendNPU-IR",
+  "repository_path": "../AscendNPU-IR",
+  "source_locations": [
+    { "file": "bishengir/include/bishengir/Dialect/HIVM/Utils/MemrefAliasAnalysisState.h", "lines": "1-53" },
+    { "file": "bishengir/lib/Dialect/HIVM/Utils/MemrefAliasAnalysisState.cpp", "lines": "1-100" }
+  ],
+  "scope": "The class itself: seeding, union, query, and debug-print semantics over llvm::EquivalenceClasses, plus its callers' contract. Excludes the alias-source enumeration inside Utils.cpp beyond what the contract needs.",
+  "related_entities": [
+    { "name": "MergeVecScopePass", "relation": "sole current consumer (builds the state, unions alias pairs, queries isAlias)" },
+    { "name": "llvm::EquivalenceClasses", "relation": "underlying union-find data structure" },
+    { "name": "getOperationAliasInfo (Utils.cpp)", "relation": "supplies the (value, value) alias pairs that feed unionAliasSets" },
+    { "name": "bufferization::OneShotAnalysisState", "relation": "declared lineage ('greatly borrowed from')" }
+  ],
+  "why_this_subject": "Generalization check (Dogfood B): a stateful analysis utility class — union-find equivalence classes over SSA values — structurally opposite to Dogfood A's IR-rewriting pass: no pipeline placement, no IR rewrite, no legality story; its depth is standard, proving the schema is not pass-overfitted.",
+  "provenance": {
+    "repository": "AscendNPU-IR",
+    "repository_path": "../AscendNPU-IR",
+    "branch": "master",
+    "head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "analyzed_at": "2026-09-08T13:10:00Z",
+    "tool_versions": { "driver": "compiler-explain-driver v1.0", "bishengir_opt": "build/bin/bishengir-opt (worktree build @ head 90037fe33)" },
+    "runtime_verification": "partial",
+    "runtime_verification_note": "executed bishengir-opt --debug-only=hivm-utils on merge-vf-level-2.mlir and observed the equivalence-class dump (union effects visible); no dedicated unit test for this class exists",
+    "source_files": [
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/Utils/MemrefAliasAnalysisState.h", "sha256": "1fd5ffc28d6e56fe8b98f92ef567e0d939dfd6eb18c2d2e0c41277c9d0d0086a" },
+      { "path": "bishengir/lib/Dialect/HIVM/Utils/MemrefAliasAnalysisState.cpp", "sha256": "eb2723eac15a2ab9506211f10fc66e98406698f6410194f84431c8f574ba02dd" },
+      { "path": "bishengir/lib/Dialect/HIVM/Utils/Utils.cpp", "sha256": "963774c9a5d437a123ecda29f2eeaa3c976669baf30da2107590e4dbb1e30f38" }
+    ]
+  }
+}

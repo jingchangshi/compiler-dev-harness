@@ -29,7 +29,11 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 | `compiler-observation-state.mjs` | per-agent correlation id 共享注册表(第 14.5 节) |
 | `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
 | `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
+| `compiler-explain-v1.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 路由段(第 17 章) |
+| `compiler-explain-driver.mjs` | 教学 artifact bundle 的 plan/validate/readiness/stale 驱动(第 17 章) |
+| `scripts/teaching-schema.mjs` | Teaching Artifact Protocol v1 validators + 机械 readiness 门 + staleness(第 17 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
+| `skills/code-explanation/` | preset 本地 skill:通用 code explanation workflow 与 artifact 字段手册(第 17 章) |
 | `skills/compiler-architecture-presentation/` | preset 本地 skill:代码/IR/设计笔记 → Quarto Reveal.js 架构/Pass 说明 slides(中文优先、Excalidraw 源图、QMD 为源、HTML 为产物) |
 | `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的**团队**仓库契约模板——模板产物落在目标仓库,不在本仓库(第 6 章) |
 | `contracts/<Profile>/{REPOSITORY_PROFILE.md,AGENTS.local.md,profile.json}` | harness 拥有的仓库 profile 与 host-local 事实源;**不含**团队 `AGENTS.md` 快照(第 6 章) |
@@ -909,6 +913,55 @@ production evidence
 
 ---
 
+## 17. Phase T1:通用 Code Explanation / Teaching 能力(2026-09-08 已实现)
+
+目标:让"解释/梳理/讲给他人/slides 前置材料"这类请求进入**同一个**通用 workflow,而不是按 subject 重新设计 harness。职责边界保持:mlir-compiler-harness/Ripwire/git = 确定性证据;本 preset = 理解 + 验证 + 解释;presentation 系统 = storyboard/排版/slides(本仓库不做排版)。
+
+### 17.1 分层(确定性半区 vs 推理半区)
+
+```text
+compiler_explain plan        → subject 骨架 + evidence 计划 + 扩展字段 + readiness 清单 + 受众问题(确定性)
+compiler_inspect / compiler_knowledge / git / 测试运行 → 事实(source/graph/runtime/historical fact)
+agent reasoning              → mechanism stages(源自源码推导)、mental_model、why、context、decisions、
+                               storyline、visual specs(semantic only)、semantic review 判词
+compiler_explain validate    → schema + evidence discipline(引用可解析、fact/reasoning 不混淆)(确定性)
+compiler_explain readiness   → 机械 readiness 门 + 记录 semantic review(确定性检查 + 人工判词落盘)
+compiler_explain stale       → provenance HEAD / source-file sha256 对比(确定性)
+```
+
+### 17.2 Artifact 模型(Teaching Artifact Protocol v1)
+
+Bundle:`analysis/explanations/<date>-<slug>-<type>/{subject,evidence,dossier,handoff,readiness}.json`(curated 后作为案例数据提交;与 feedback 协议同类所有者)。核心抽象:
+
+- **AnalysisSubject**(`subject.json`):`subject_id/subject_type/name/repository/source_locations/scope/related_entities/why_this_subject` + 完整 provenance(repository/branch/HEAD/analyzed_at/tool_versions/runtime_verification/source_files sha256)。
+- **Evidence ledger**(`evidence.json`):七类陈述(source_fact/graph_fact/runtime_fact/historical_fact/reasoning/hypothesis/unknown),source_fact 强制 refs、graph_fact 强制 tool/command、historical_fact 强制 commit/refs——class 的语义由其工具负担保证。
+- **TeachingDossier**(`dossier.json`):common core(mental_model、need/responsibility/observable_outcome、system_context 上下游因果、inputs/outputs、mechanism.stages 源码推导、implementation/conceptual 双视图、canonical_example(test>production>probe>reconstructed)、state_transitions、decisions、strategies+comparisons(≥2 才允许)、contracts、constraints/invariants/assumptions(status)、boundaries(六类、必须引用证据——"没看到"是 unknown 不是 unsupported)、placement(可 not_applicable)、ownership、complexity、key_takeaways)+ **恰好一个**匹配 subject_type 的 extension(pass/function/algorithm/class/subsystem/pipeline/data_structure/module/workflow/component_group)。
+- **PresentationHandoff**(`handoff.json`):adaptive storyline(role 自由文本,禁止固定 pass 叙事)、learning_objectives、semantic visual specs(12 种 kind;nodes/edges/groups/ordering;出现 x/y/width/height/color 等布局键即校验失败)、must/optional visuals、bounded evidence_index。**Handoff ≠ Slides**。
+- **ReadinessReport**(`readiness.json`,工具写出):READY ⇔ 机械门通过 ∧ semantic review 已记录且判 ready(10 个通用受众问题 + 类型自适应问题全部 sufficient)∧ 未 stale。字段齐全永远不等于 READY(§30/§31 的结构化编码)。
+
+### 17.3 防 Pass 中心与防过拟合(硬不变量)
+
+- `pipeline_position/legality/before_ir/after_ir/pass_option/attribute_*` 只存在于 `pass` extension;common core 无一涉及。
+- Extension registry(`EXTENSION_KEYS`)是唯一按类型分支的表;readiness 的类型检查同样只查匹配 type 的 extension。新增 subject 类型 = 增一行 registry,零特殊分支。
+- 通用层(schema/tool/validator/skill)不得出现任何具体 subject 概念(MergeVecScope、VF、scheduler、buffer 等);它们只能存在于 artifact 数据(案例数据)中。
+- 无可解释内容时 readiness 拒绝(无 mental_model、无 fact 证据、声明 branching 却无 decisions 等),不允许用占位内容凑齐字段。
+
+### 17.4 文件清单(Phase T1 增改)
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/teaching-schema.mjs` | 协议 v1 validators + 机械 readiness 门 + staleness(纯函数,无 I/O) |
+| `compiler-explain-driver.mjs` | plan/validate/readiness/stale 实现(bundle IO、git spawn、env `COMPILER_DEV_EXPLAIN_DIR`) |
+| `compiler-explain-v1.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 段(order 116) |
+| `skills/code-explanation/SKILL.md`(+`references/teaching-artifact-guide.md`) | 条件性 workflow 指南 + 字段手册 |
+| `scripts/test/teaching-schema.test.mjs`、`scripts/test/compiler-explain.test.mjs`、`scripts/test/teaching-dogfood.test.mjs` | 43 + 12 + 10 项测试(schema/可选字段/readiness/semantic 门/staleness/工具面/dogfood 语义回归 + generic 层反过拟合扫描) |
+| `agent.cordis.yml` | 新增 `compiler-explain` row |
+| `analysis/explanations/…`(dogfood) | 案例数据:`2026-09-08-mergevecscope-pass/`(Case A,pass,presentation,READY)、`2026-09-08-memref-alias-state-class/`(Case B,class,standard,READY) |
+
+与既有能力的边界:不重新实现 call graph/pass graph/attribute index/git history(消费 `compiler_knowledge`、`compiler_inspect`、git);不做 PPT renderer/图布局(visual spec 止于语义);feedback 协议与观测闭环保持原样(explain 任务经 `compiler_route` 以 `anchored-code-analysis`/`other` 声明)。
+
+---
+
 ### 附录:事实来源
 
 - Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-6.cjs`、`compiler-inspect-driver.mjs`(v1.5)、
@@ -923,7 +976,10 @@ production evidence
   `analysis/2026-09-07-phase2-observation-loop.md`(Phase 2 实施与验证记录)、
   `analysis/2026-09-07-phase-r1-ripwire-context-backend.md`(Phase R1)、
   `analysis/2026-09-07-phase-r1-5-ripwire-production-evidence-loop.md`(Phase R1.5)、
-  `analysis/2026-09-07-phase-r1-6-r1-7-context-attribution-auto-rollout.md`(Phase R1.6+R1.7)。Phase R1 的实现依据另见
+  `analysis/2026-09-07-phase-r1-6-r1-7-context-attribution-auto-rollout.md`(Phase R1.6+R1.7)、
+  `analysis/2026-09-08-phase-t1-teaching-explanation.md`(Phase T1:teaching 能力实施与 dogfood 报告)、
+  `analysis/explanations/2026-09-08-*`(dogfood bundle:subject/evidence/dossier/handoff/readiness)。
+  Phase R1 的实现依据另见
   上游 `redhat-et/ripwire`(c7914e8dc8429a318ffe24f857077e2b1d52d62e)`src/packtask.h`、`src/ingest.h`、
   `docs/COMMANDS.md` 与第 14 章实测记录。
 - Harness:`docs/architecture/{overview,query-api,schema,status}.md`、`docs/workflows/{repo-map,pass-analysis,pipeline-audit}.md`、

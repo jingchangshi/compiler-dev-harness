@@ -306,6 +306,19 @@
 - id: compiler-knowledge
   name: ./compiler-knowledge-v3.cjs
 
+# Generic Code Explanation / teaching capability: the `compiler_explain` tool
+# (plan/validate/readiness/stale over teaching artifact bundles) + the
+# always-on code-explanation routing section. Deterministic half only —
+# schemas, evidence discipline, mechanical readiness preconditions, and
+# provenance/staleness live in scripts/teaching-schema.mjs and
+# compiler-explain-driver.mjs; mechanism reconstruction, mental models,
+# storylines, and the semantic readiness verdict are agent reasoning recorded
+# in the artifacts (workflow guidance: skills/code-explanation/). Consumes
+# compiler_inspect / compiler_knowledge as its evidence sources; publishes no
+# service, no realm.
+- id: compiler-explain
+  name: ./compiler-explain-v1.cjs
+
 # ── remaining model-facing rows ─────────────────────────────────────────────
 
 - id: tool-ask-user

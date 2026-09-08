@@ -1,0 +1,164 @@
+{
+  "artifact": "readiness_report",
+  "schema_version": 1,
+  "subject_id": "memref-alias-state-class",
+  "depth": "standard",
+  "mechanical": {
+    "checks": [
+      {
+        "name": "schema_valid",
+        "status": "pass",
+        "detail": "subject/evidence/dossier/handoff shapes valid"
+      },
+      {
+        "name": "identity",
+        "status": "pass",
+        "detail": "subject class:MemrefAliasAnalysisState"
+      },
+      {
+        "name": "purpose_explained",
+        "status": "pass",
+        "detail": "need/purpose present"
+      },
+      {
+        "name": "mental_model",
+        "status": "pass",
+        "detail": "2 sentence(s), identifier density 0%"
+      },
+      {
+        "name": "system_context",
+        "status": "pass",
+        "detail": "2 upstream/trigger, 1 downstream entries"
+      },
+      {
+        "name": "inputs_outputs",
+        "status": "pass",
+        "detail": "inputs/outputs/contracts present"
+      },
+      {
+        "name": "mechanism",
+        "status": "pass",
+        "detail": "3 source-derived stages"
+      },
+      {
+        "name": "canonical_example",
+        "status": "not_applicable",
+        "detail": "optional for class"
+      },
+      {
+        "name": "state_transitions",
+        "status": "pass",
+        "detail": "3 transitions"
+      },
+      {
+        "name": "decisions",
+        "status": "not_applicable",
+        "detail": "no important branching declared"
+      },
+      {
+        "name": "constraints",
+        "status": "pass",
+        "detail": "2 constraints, 1 invariants"
+      },
+      {
+        "name": "boundaries",
+        "status": "pass",
+        "detail": "3 boundary entries"
+      },
+      {
+        "name": "key_takeaways",
+        "status": "pass",
+        "detail": "4 takeaways"
+      },
+      {
+        "name": "fact_evidence",
+        "status": "pass",
+        "detail": "9 fact-class evidence records"
+      },
+      {
+        "name": "claims_trace_to_evidence",
+        "status": "pass",
+        "detail": "all explanation primitives cite ledger evidence"
+      },
+      {
+        "name": "extension_class",
+        "status": "pass",
+        "detail": "lifecycle, state/api, collaborators present"
+      }
+    ],
+    "verdict": "pass",
+    "failures": []
+  },
+  "semantic_review": {
+    "verdict": "ready",
+    "reviewer": "agent (dogfood B session)",
+    "reviewed_at": "2026-09-08T13:53:43.491Z",
+    "audience_questions": [
+      {
+        "question": "它是什么？",
+        "answer": "memref 值上的并查集：seed 每个 memref 为单独等价类，收到别名证据就合并，查询即等价判断",
+        "sufficient": true
+      },
+      {
+        "question": "为什么存在？",
+        "answer": "消费方需要传递性 may-alias 关系，IR 只给局部证据（cast 的 result↔source），必须有地方累积成可查询形态",
+        "sufficient": true
+      },
+      {
+        "question": "它处在什么上下文？",
+        "answer": "别名证据来自 getOperationAliasInfo；唯一消费方 MergeVecScope 在依赖扫描里构造/喂证据/查询",
+        "sufficient": true
+      },
+      {
+        "question": "输入和输出是什么？",
+        "answer": "输入：scope Operation*（构造时 seed）+ (Value,Value) 别名对；输出：isAlias 布尔查询 + printAlias 调试转储",
+        "sufficient": true
+      },
+      {
+        "question": "核心机制是什么？",
+        "answer": "三阶段：Seed（构造时插入全部 memref 值）→ Absorb（unionSets，类型守卫）→ Query（isEquivalent）",
+        "sufficient": true
+      },
+      {
+        "question": "哪些状态最重要？",
+        "answer": "aliasInfo 等价类划分本身——类数随 union 单调下降；每次 union 前后都是划分",
+        "sufficient": true
+      },
+      {
+        "question": "哪些决策决定行为？",
+        "answer": "唯一决策：类型守卫（非 memref 对静默忽略）",
+        "sufficient": true
+      },
+      {
+        "question": "与哪些组件交互？",
+        "answer": "getOperationAliasInfo（证据）、MergeVecScope 依赖扫描（查询）、llvm::EquivalenceClasses（底层数据结构）",
+        "sufficient": true
+      },
+      {
+        "question": "什么情况下不能工作或选择另一条路径？",
+        "answer": "混合类型 union 是 no-op 而非报错；scope 外的值查询返回不相关；无专属单测，行为只被 merge fixtures 间接覆盖",
+        "sufficient": true
+      },
+      {
+        "question": "最值得记住的 3～5 点是什么？",
+        "answer": "四条 takeaway：并查集、消费方拥有证据循环、memref-only 封闭域、单消费方无单测",
+        "sufficient": true
+      },
+      {
+        "question": "对象的生命周期和拥有的状态是什么？",
+        "answer": "consumer 栈上 RAII，每次分析一个实例；唯一 owned_state 是 aliasInfo",
+        "sufficient": true
+      },
+      {
+        "question": "公共接口和协作对象是什么？",
+        "answer": "5 个公有方法；协作者 getOperationAliasInfo 与 MergeVecScopePass",
+        "sufficient": true
+      }
+    ],
+    "notes": "泛化核对：同一套 common core 在无 pipeline/无改写/无 legality 的分析工具类上完整工作；handoff 在 standard 深度未生成（按设计可选）；canonical example 显式 RECONSTRUCTED。"
+  },
+  "verdict": "ready",
+  "reasons": [],
+  "driver": "compiler-explain-driver v1.0",
+  "evaluated_at": "2026-09-08T13:53:43.492Z"
+}
