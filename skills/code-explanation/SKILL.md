@@ -80,3 +80,7 @@ Then exactly one type extension under `extensions.<subject_type>` — pass field
 ## Anti-overfitting
 
 The generic layer (schema, tool, validators) must never contain subject-specific concepts — anything about a specific pass, VF, scheduler, or buffer belongs in artifact data only. If explaining a new subject type needs engine changes, first check whether the common core plus a new `extensions.<type>` key list suffices; grow the extension registry, not special cases.
+
+## Handing off to the presentation system
+
+When the user wants a presentation too ("做成 slides / 演示文稿"), the handoff is the contract, not an intermediate file: once `readiness.json` records READY and `compiler_explain stale` (or `scripts/preflight-handoff.mjs`) confirms FRESH, the compiler-architecture-presentation skill consumes the bundle in handoff-first Mode A — its storyline/visuals/takeaways are the deck's semantic source of truth, and the presentation side must not re-derive the story from source. If the user asks for presentation while the bundle is NOT_READY or STALE, that is producer work first: finish or refresh the explanation bundle (evidence → teaching → handoff → readiness), then hand off. A dossier without a handoff is not enough for the presentation skill to start — produce the handoff (Mode B), don't let the presentation side guess the story.

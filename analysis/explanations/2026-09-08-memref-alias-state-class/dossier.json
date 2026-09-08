@@ -3,7 +3,7 @@
   "schema_version": 1,
   "subject_id": "memref-alias-state-class",
   "subject_type": "class",
-  "depth": "standard",
+  "depth": "presentation",
   "mental_model": "It is a growable partition of memref values into may-alias groups: every memref starts alone in its own group, and each proven alias pair merges the two groups, so any later 'do these two names touch the same memory?' question is one equivalence lookup.",
   "need": "Consumers need a transitive may-alias relation over SSA values, but the IR only offers local evidence (this cast's result is its source); someone must accumulate that evidence into a queryable form.",
   "responsibility": "Own the alias equivalence relation for one analysis scope: seed it with every memref value, absorb alias evidence pair by pair, and answer may-alias queries.",

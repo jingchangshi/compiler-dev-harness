@@ -92,12 +92,13 @@ test('dogfood A: canonical example provenance is an executed test; runtime facts
 
 function bundleA() { return loadBundle(caseA) }
 
-test('dogfood B bundle is schema-valid and READY at standard depth without a handoff', () => {
+test('dogfood B bundle is schema-valid and READY (upgraded to presentation depth with a handoff in T2)', () => {
   const bundle = loadBundle(caseB)
-  assert.equal(bundle.handoff, undefined, 'standard depth does not require a handoff')
+  assert.ok(bundle.handoff, 'T2 upgraded bundle B to presentation depth: handoff.json must exist')
+  assert.equal(bundle.dossier.depth, 'presentation')
   const { errors } = validateBundle(bundle)
   assert.deepEqual(errors, [])
-  const { verdict } = computeReadiness(bundle, { depth: 'standard' })
+  const { verdict } = computeReadiness(bundle, { depth: 'presentation' })
   assert.equal(verdict, 'ready', JSON.stringify(bundle.readiness?.reasons))
 })
 
@@ -130,7 +131,13 @@ test('generic layer source contains no subject-specific concepts', () => {
   const genericSources = [
     join(repoRoot, 'scripts', 'teaching-schema.mjs'),
     join(repoRoot, 'compiler-explain-driver.mjs'),
-    join(repoRoot, 'compiler-explain-v1.cjs'),
+    join(repoRoot, 'compiler-explain-v2.cjs'),
+    // T2 consumer layer: preflight gate + presentation-side tooling
+    join(repoRoot, 'scripts', 'preflight-handoff.mjs'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'scripts', 'spec_to_diagram.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'validate_manifest.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'check_project.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'SKILL.md'),
   ]
   const banned = /MergeVecScope|AutoVectorizeV2|FlattenOps|RegBase|HFusion|HIVM|tryMerge|mergeLevel|bufferiz/i
   for (const file of genericSources) {

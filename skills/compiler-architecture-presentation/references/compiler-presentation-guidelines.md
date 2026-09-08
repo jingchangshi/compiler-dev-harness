@@ -1,3 +1,8 @@
+> **Scope (Phase T2).** The pass-shaped narrative expectations in this reference
+> apply to the **raw-input fallback mode** (Mode C: no READY PresentationHandoff).
+> In handoff-first mode (Mode A), `handoff.storyline` outranks everything here —
+> see SKILL.md "Handoff authority rules".
+
 # Compiler Presentation Guidelines
 
 This document defines the writing and layout quality bar for the `compiler-architecture-presentation` skill.

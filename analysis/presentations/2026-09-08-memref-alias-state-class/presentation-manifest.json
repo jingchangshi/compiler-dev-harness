@@ -1,0 +1,142 @@
+{
+  "artifact": "presentation_manifest",
+  "schema_version": 1,
+  "input": {
+    "bundle_id": "2026-09-08-memref-alias-state-class",
+    "bundle_dir": "analysis/explanations/2026-09-08-memref-alias-state-class",
+    "subject_id": "memref-alias-state-class",
+    "subject_type": "class",
+    "handoff_schema_version": 1,
+    "handoff_sha256": "1693e2d9b7e459a268864ad85aa75d87138f87ad8e7670e4171d26a4f432f885",
+    "dossier_sha256": "ebf64ccb9d299adb15c7fffb3c8d35941a97fcc82be2e4c7ae48210db494babc",
+    "source_head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "readiness_verdict": "ready",
+    "preflight": "CONSUMABLE"
+  },
+  "consumed": {
+    "storyline": [
+      {
+        "position": 1,
+        "role": "为什么需要它",
+        "disposition": "consumed",
+        "slides": [
+          "为什么需要它？"
+        ]
+      },
+      {
+        "position": 2,
+        "role": "它是什么",
+        "disposition": "consumed",
+        "slides": [
+          "它是什么：memref 值上的并查集"
+        ]
+      },
+      {
+        "position": 3,
+        "role": "生命周期与所有权",
+        "disposition": "consumed",
+        "slides": [
+          "生命周期与所有权"
+        ]
+      },
+      {
+        "position": 4,
+        "role": "状态演化",
+        "disposition": "consumed",
+        "slides": [
+          "状态演化：seed → 合并 → 查询"
+        ]
+      },
+      {
+        "position": 5,
+        "role": "边界",
+        "disposition": "consumed",
+        "slides": [
+          "边界"
+        ]
+      },
+      {
+        "position": 6,
+        "role": "最值得记住的事",
+        "disposition": "consumed",
+        "slides": [
+          "总结"
+        ]
+      }
+    ],
+    "must_have_visuals": [
+      {
+        "id": "V1",
+        "assets": [
+          "diagrams/V1.excalidraw",
+          "diagrams/V1.svg"
+        ],
+        "slides": [
+          "架构位置：证据从哪来，答案给谁"
+        ]
+      },
+      {
+        "id": "V2",
+        "assets": [
+          "diagrams/V2.excalidraw",
+          "diagrams/V2.svg"
+        ],
+        "slides": [
+          "状态演化：等价类的三次变化"
+        ]
+      }
+    ],
+    "optional_visuals": [
+      {
+        "id": "V3",
+        "used": true
+      }
+    ],
+    "key_takeaways": [
+      "总结"
+    ],
+    "evidence_ids": [
+      "EV-101",
+      "EV-102",
+      "EV-103",
+      "EV-104",
+      "EV-106",
+      "EV-107",
+      "EV-109",
+      "EV-110"
+    ],
+    "canonical_example": {
+      "summary": "RECONSTRUCTED 3-value walkthrough backed by the observed dump; narrated on the state-evolution slide",
+      "slide": "状态演化：等价类的三次变化"
+    }
+  },
+  "adaptations": [
+    {
+      "source_element": "handoff.visuals V1 slide mapping",
+      "presentation_decision": "split the architecture slide from the sequence slide",
+      "reason": "V1 (architecture) and V3 (sequence) serve different moments; one slide would crowd the CJK labels"
+    },
+    {
+      "source_element": "handoff.canonical_example (RECONSTRUCTED walkthrough)",
+      "presentation_decision": "narrated on the state-evolution slide instead of a separate worked-example slide",
+      "reason": "the observed dump (EV-106) already shows the merge; the symbolic walkthrough adds the frame sequence without a new slide"
+    },
+    {
+      "source_element": "handoff.appendix_topics",
+      "presentation_decision": "reduced to a pointer appendix slide",
+      "reason": "deck scope; topics remain available in the dossier for a deeper session"
+    }
+  ],
+  "generated": {
+    "qmd": "slides.qmd",
+    "diagrams": [
+      "diagrams/V1.excalidraw",
+      "diagrams/V1.svg",
+      "diagrams/V2.excalidraw",
+      "diagrams/V2.svg",
+      "diagrams/V3.excalidraw",
+      "diagrams/V3.svg"
+    ],
+    "rendered": null
+  }
+}

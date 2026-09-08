@@ -2,7 +2,7 @@
   "artifact": "readiness_report",
   "schema_version": 1,
   "subject_id": "memref-alias-state-class",
-  "depth": "standard",
+  "depth": "presentation",
   "mechanical": {
     "checks": [
       {
@@ -39,6 +39,11 @@
         "name": "mechanism",
         "status": "pass",
         "detail": "3 source-derived stages"
+      },
+      {
+        "name": "two_views",
+        "status": "pass",
+        "detail": "implementation and conceptual views present"
       },
       {
         "name": "canonical_example",
@@ -81,9 +86,29 @@
         "detail": "all explanation primitives cite ledger evidence"
       },
       {
+        "name": "placement",
+        "status": "pass",
+        "detail": "placement explained"
+      },
+      {
         "name": "extension_class",
         "status": "pass",
         "detail": "lifecycle, state/api, collaborators present"
+      },
+      {
+        "name": "handoff_storyline",
+        "status": "pass",
+        "detail": "6 storyline steps"
+      },
+      {
+        "name": "handoff_visuals",
+        "status": "pass",
+        "detail": "3 visual specs"
+      },
+      {
+        "name": "handoff_takeaways",
+        "status": "pass",
+        "detail": "4 takeaways"
       }
     ],
     "verdict": "pass",
@@ -91,74 +116,74 @@
   },
   "semantic_review": {
     "verdict": "ready",
-    "reviewer": "agent (dogfood B session)",
-    "reviewed_at": "2026-09-08T13:53:43.491Z",
+    "reviewer": "agent (dogfood B upgrade to presentation depth)",
+    "reviewed_at": "2026-09-08T14:32:40.335Z",
     "audience_questions": [
       {
         "question": "它是什么？",
-        "answer": "memref 值上的并查集：seed 每个 memref 为单独等价类，收到别名证据就合并，查询即等价判断",
+        "answer": "memref 值上的并查集：seed 单元素类，证据到达合并，查询即等价判断",
         "sufficient": true
       },
       {
         "question": "为什么存在？",
-        "answer": "消费方需要传递性 may-alias 关系，IR 只给局部证据（cast 的 result↔source），必须有地方累积成可查询形态",
+        "answer": "消费方需要传递性 may-alias，IR 只给局部证据，需要累积成可查询形态",
         "sufficient": true
       },
       {
         "question": "它处在什么上下文？",
-        "answer": "别名证据来自 getOperationAliasInfo；唯一消费方 MergeVecScope 在依赖扫描里构造/喂证据/查询",
+        "answer": "getOperationAliasInfo 供证据，MergeVecScope 消费 isAlias，单消费方",
         "sufficient": true
       },
       {
         "question": "输入和输出是什么？",
-        "answer": "输入：scope Operation*（构造时 seed）+ (Value,Value) 别名对；输出：isAlias 布尔查询 + printAlias 调试转储",
+        "answer": "输入：scope Operation* + 别名对；输出：isAlias 布尔 + printAlias dump",
         "sufficient": true
       },
       {
         "question": "核心机制是什么？",
-        "answer": "三阶段：Seed（构造时插入全部 memref 值）→ Absorb（unionSets，类型守卫）→ Query（isEquivalent）",
+        "answer": "Seed → Absorb → Query 三阶段",
         "sufficient": true
       },
       {
         "question": "哪些状态最重要？",
-        "answer": "aliasInfo 等价类划分本身——类数随 union 单调下降；每次 union 前后都是划分",
+        "answer": "等价类划分本身：seed 全单元素 → subview∪arg0 合并 → 查询",
         "sufficient": true
       },
       {
         "question": "哪些决策决定行为？",
-        "answer": "唯一决策：类型守卫（非 memref 对静默忽略）",
+        "answer": "memref-only 类型守卫：混合类型 union 静默无效",
         "sufficient": true
       },
       {
         "question": "与哪些组件交互？",
-        "answer": "getOperationAliasInfo（证据）、MergeVecScope 依赖扫描（查询）、llvm::EquivalenceClasses（底层数据结构）",
+        "answer": "证据源、MergeVecScope 依赖扫描、llvm::EquivalenceClasses",
         "sufficient": true
       },
       {
         "question": "什么情况下不能工作或选择另一条路径？",
-        "answer": "混合类型 union 是 no-op 而非报错；scope 外的值查询返回不相关；无专属单测，行为只被 merge fixtures 间接覆盖",
+        "answer": "非 memref 对静默 no-op；域外值视为不相关；无专属单测",
         "sufficient": true
       },
       {
         "question": "最值得记住的 3～5 点是什么？",
-        "answer": "四条 takeaway：并查集、消费方拥有证据循环、memref-only 封闭域、单消费方无单测",
+        "answer": "四条 takeaway",
         "sufficient": true
       },
       {
         "question": "对象的生命周期和拥有的状态是什么？",
-        "answer": "consumer 栈上 RAII，每次分析一个实例；唯一 owned_state 是 aliasInfo",
+        "answer": "consumer 栈上 RAII，唯一 owned state 是 aliasInfo",
         "sufficient": true
       },
       {
         "question": "公共接口和协作对象是什么？",
-        "answer": "5 个公有方法；协作者 getOperationAliasInfo 与 MergeVecScopePass",
+        "answer": "构造/unionAliasSets/createAliasInfoEntry/isAlias/printAlias；协作者 getOperationAliasInfo 与 MergeVecScopePass",
         "sufficient": true
       }
     ],
-    "notes": "泛化核对：同一套 common core 在无 pipeline/无改写/无 legality 的分析工具类上完整工作；handoff 在 standard 深度未生成（按设计可选）；canonical example 显式 RECONSTRUCTED。"
+    "notes": "升级到 presentation 深度的重审：新增 handoff 的 storyline roles（为什么需要/它是什么/生命周期与所有权/状态演化/边界/要点）全部来自 dossier 既有语义字段，无新 claim；runtime 观测（EV-106/107）支撑状态演化叙事。独立受众复核由 fresh subagent 在 T2 中另行执行。"
   },
   "verdict": "ready",
   "reasons": [],
   "driver": "compiler-explain-driver v1.0",
-  "evaluated_at": "2026-09-08T13:53:43.492Z"
+  "evaluated_at": "2026-09-08T16:20:56.484Z"
 }

@@ -317,7 +317,7 @@
 # compiler_inspect / compiler_knowledge as its evidence sources; publishes no
 # service, no realm.
 - id: compiler-explain
-  name: ./compiler-explain-v1.cjs
+  name: ./compiler-explain-v2.cjs
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 # Teaching Artifact Protocol v1 — field guide
 
-Authoritative validators: `scripts/teaching-schema.mjs`. Deterministic tool: `compiler_explain` (`compiler-explain-v1.cjs` + `compiler-explain-driver.mjs`). This guide explains intent; the validators decide acceptance.
+Authoritative validators: `scripts/teaching-schema.mjs`. Deterministic tool: `compiler_explain` (`compiler-explain-v2.cjs` + `compiler-explain-driver.mjs`). This guide explains intent; the validators decide acceptance.
 
 ## Bundle layout
 

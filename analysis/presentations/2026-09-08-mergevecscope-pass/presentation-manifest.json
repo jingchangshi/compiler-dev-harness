@@ -1,0 +1,163 @@
+{
+  "artifact": "presentation_manifest",
+  "schema_version": 1,
+  "input": {
+    "bundle_id": "2026-09-08-mergevecscope-pass",
+    "bundle_dir": "analysis/explanations/2026-09-08-mergevecscope-pass",
+    "subject_id": "mergevecscope-pass",
+    "subject_type": "pass",
+    "handoff_schema_version": 1,
+    "handoff_sha256": "35c9b2aeb91bc974509728cb6e549b877c8663ac1afa6d1eb2a61b40e27bc8d0",
+    "dossier_sha256": "0bd02056f493fec694aaee2883a1e927bbbf8413ad0f68b43e4bdaefbb78f503",
+    "source_head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "readiness_verdict": "ready",
+    "preflight": "CONSUMABLE"
+  },
+  "consumed": {
+    "storyline": [
+      {
+        "position": 1,
+        "role": "为什么存在",
+        "disposition": "consumed",
+        "slides": [
+          "为什么存在？VF call 的调度开销"
+        ]
+      },
+      {
+        "position": 2,
+        "role": "核心想法",
+        "disposition": "consumed",
+        "slides": [
+          "核心想法：相邻 VF call 融合"
+        ]
+      },
+      {
+        "position": 3,
+        "role": "怎么找到候选对",
+        "disposition": "consumed",
+        "slides": [
+          "怎么找到候选对：排序 → 依赖事实 → 打分"
+        ]
+      },
+      {
+        "position": 4,
+        "role": "合法性门",
+        "disposition": "consumed",
+        "slides": [
+          "合法性门：全过才改写"
+        ]
+      },
+      {
+        "position": 5,
+        "role": "实例走一遍",
+        "disposition": "consumed",
+        "slides": [
+          "实例：L1 fixture 实测"
+        ]
+      },
+      {
+        "position": 6,
+        "role": "两种策略",
+        "disposition": "consumed",
+        "slides": [
+          "两种策略：L1 / L2"
+        ]
+      },
+      {
+        "position": 7,
+        "role": "边界与风险",
+        "disposition": "split",
+        "slides": [
+          "边界：支持什么、拒绝什么",
+          "风险与已知发现"
+        ],
+        "reason": "boundary statements and open-finding risk callouts separated for slide density"
+      }
+    ],
+    "must_have_visuals": [
+      {
+        "id": "V1",
+        "assets": [
+          "diagrams/V1.excalidraw",
+          "diagrams/V1.svg"
+        ],
+        "slides": [
+          "两种策略：L1 / L2"
+        ]
+      },
+      {
+        "id": "V2",
+        "assets": [
+          "diagrams/V2.excalidraw",
+          "diagrams/V2.svg"
+        ],
+        "slides": [
+          "实例：L1 fixture 实测"
+        ]
+      },
+      {
+        "id": "V3",
+        "assets": [
+          "diagrams/V3.excalidraw",
+          "diagrams/V3.svg"
+        ],
+        "slides": [
+          "合法性门：全过才改写"
+        ]
+      }
+    ],
+    "optional_visuals": [
+      {
+        "id": "V4",
+        "used": false
+      }
+    ],
+    "key_takeaways": [
+      "总结"
+    ],
+    "evidence_ids": [
+      "EV-001",
+      "EV-008",
+      "EV-012",
+      "EV-013",
+      "EV-015",
+      "EV-016",
+      "EV-020"
+    ],
+    "canonical_example": {
+      "summary": "attention fixture executed with bishengir-opt: two adjacent tensor-level VF calls → one 4-result merged call",
+      "slide": "实例：L1 fixture 实测"
+    }
+  },
+  "adaptations": [
+    {
+      "source_element": "handoff.storyline step 7 (边界与风险)",
+      "presentation_decision": "split into two slides (边界 / 风险)",
+      "reason": "separate supported/rejected boundary statements from open-finding risk callouts for slide density"
+    },
+    {
+      "source_element": "handoff.visuals V4 (state_transition, optional)",
+      "presentation_decision": "not used in the deck",
+      "reason": "candidate/merge story already conveyed textually on the mechanism and example slides; optional visual omitted without loss"
+    },
+    {
+      "source_element": "dossier.comparisons L1/L2 (7 dimensions)",
+      "presentation_decision": "condensed to 5 rows on the strategy slide",
+      "reason": "slide readability; the full comparison table remains in the dossier"
+    }
+  ],
+  "generated": {
+    "qmd": "slides.qmd",
+    "diagrams": [
+      "diagrams/V1.excalidraw",
+      "diagrams/V1.svg",
+      "diagrams/V2.excalidraw",
+      "diagrams/V2.svg",
+      "diagrams/V3.excalidraw",
+      "diagrams/V3.svg",
+      "diagrams/V4.excalidraw",
+      "diagrams/V4.svg"
+    ],
+    "rendered": null
+  }
+}

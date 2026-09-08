@@ -1,0 +1,112 @@
+{
+  "artifact": "presentation_handoff",
+  "schema_version": 1,
+  "subject_id": "memref-alias-state-class",
+  "subject_type": "class",
+  "depth": "presentation",
+  "audience": {
+    "who": "compiler engineers who know SSA values and memrefs but have not read this utility or its consumer",
+    "goal": "understand the accumulate-and-query may-alias pattern, what the class owns and does not do, and how its state evolves"
+  },
+  "learning_objectives": [
+    "Explain the union-find may-alias pattern in one sentence",
+    "Name the class's five public operations and its single owned state",
+    "Trace one alias pair from IR evidence to a merged equivalence class",
+    "State the memref-only closure rule and the silent no-op consequence",
+    "Point out the testing gap (no dedicated unit test; indirect coverage only)"
+  ],
+  "storyline": [
+    { "position": 1, "role": "为什么需要它", "claim": "消费方需要传递性 may-alias 关系，但 IR 只给局部证据（cast 的 result↔source），必须有人把证据累积成可查询形态", "dossier_section": "need", "evidence_refs": ["EV-110"] },
+    { "position": 2, "role": "它是什么", "claim": "memref 值上的并查集：seed 每个 memref 为单独等价类，收到别名证据就合并，查询即等价判断", "dossier_section": "mental_model", "evidence_refs": ["EV-101", "EV-103"] },
+    { "position": 3, "role": "生命周期与所有权", "claim": "consumer 栈上的 RAII 对象，每次分析一个实例；唯一 owned state 是 aliasInfo；消费方拥有证据循环，类只负责累积与回答", "dossier_section": "extensions.class + conceptual_view", "evidence_refs": ["EV-104"] },
+    { "position": 4, "role": "状态演化", "claim": "三个真实状态阶段：seed（全单元素类）→ absorb（证据对合并类，实测 subview∪block-arg）→ query（等价判断）；memref-only 守卫让混合类型 union 静默无效", "dossier_section": "state_transitions + decisions", "evidence_refs": ["EV-102", "EV-103", "EV-106"] },
+    { "position": 5, "role": "边界", "claim": "查询域封闭在 seed 过的 memref；不做自己的流/指针分析；无专属单测，行为只被 merge fixtures 间接覆盖", "dossier_section": "boundaries", "evidence_refs": ["EV-107", "EV-109"] },
+    { "position": 6, "role": "最值得记住的事", "claim": "四条 takeaway：并查集模式、消费方拥有证据循环、封闭域守卫、单消费方无单测", "dossier_section": "key_takeaways", "evidence_refs": ["EV-104", "EV-106"] }
+  ],
+  "visuals": [
+    {
+      "id": "V1",
+      "kind": "architecture",
+      "title": "证据从哪来，答案给谁用",
+      "purpose": "show the class's place: evidence producer → accumulate-and-query state → consumer's dependency scan",
+      "nodes": [
+        { "id": "producer", "label": "getOperationAliasInfo（cast/select 别名对）", "role": "evidence-source" },
+        { "id": "cls", "label": "MemrefAliasAnalysisState（等价类划分）", "role": "subject" },
+        { "id": "consumer", "label": "MergeVecScope 依赖扫描（isAlias 判定）", "role": "consumer" }
+      ],
+      "edges": [
+        { "from": "producer", "to": "cls", "label": "(Value,Value) 别名对" },
+        { "from": "cls", "to": "consumer", "label": "isAlias 布尔查询" }
+      ],
+      "ordering": ["producer", "cls", "consumer"],
+      "source": "EV-104, EV-105"
+    },
+    {
+      "id": "V2",
+      "kind": "state_transition",
+      "title": "等价类划分的三次演化",
+      "purpose": "make the mutable state the visual centerpiece: seed → absorb → query",
+      "nodes": [
+        { "id": "s0", "label": "seed：每个 memref 一个单元素类", "role": "before" },
+        { "id": "op", "label": "unionAliasSets(subview, arg0) —— 证据对到达", "role": "operation" },
+        { "id": "s1", "label": "absorb：{subview, arg0} 合并；alloc/call 结果保持单元素", "role": "after" },
+        { "id": "q", "label": "query：isAlias = isEquivalent（等价判断）", "role": "result" }
+      ],
+      "edges": [
+        { "from": "s0", "to": "op" },
+        { "from": "op", "to": "s1" },
+        { "from": "s1", "to": "q" }
+      ],
+      "ordering": ["s0", "op", "s1", "q"],
+      "source": "EV-102, EV-106"
+    },
+    {
+      "id": "V3",
+      "kind": "sequence",
+      "title": "一次分析内的交互序列",
+      "purpose": "show the consumer-driven control flow: construct → union loop → query loop",
+      "nodes": [
+        { "id": "c1", "label": "构造：MemrefAliasAnalysisState(root)", "role": "step" },
+        { "id": "c2", "label": "union 循环：喂入全部别名对", "role": "step" },
+        { "id": "c3", "label": "查询循环：依赖扫描中逐对 isAlias", "role": "step" },
+        { "id": "c4", "label": "析构：随 consumer 栈帧结束", "role": "step" }
+      ],
+      "edges": [
+        { "from": "c1", "to": "c2" },
+        { "from": "c2", "to": "c3" },
+        { "from": "c3", "to": "c4" }
+      ],
+      "ordering": ["c1", "c2", "c3", "c4"],
+      "source": "EV-104"
+    }
+  ],
+  "must_have_visuals": ["V1", "V2"],
+  "optional_visuals": ["V3"],
+  "canonical_example": {
+    "summary": "RECONSTRUCTED 3-value walkthrough ({arg0},{subview},{buf} → union → {arg0,subview},{buf} → queries), backed by the observed dump grouping subview with its block-argument source",
+    "provenance": "reconstructed (see dossier.canonical_example.provenance)",
+    "key_frames": ["三个单元素类", "union(subview, arg0)", "类数 3→2；isAlias 查询反映合并"]
+  },
+  "key_takeaways": [
+    "并查集 over SSA 值：seed 每个 memref，证据到达就合并，查询即等价判断",
+    "消费方拥有证据循环；类只累积和回答，自己不做分析",
+    "memref-only 守卫保持关系封闭；混合类型 union 是静默 no-op",
+    "当前单消费方（MergeVecScope），且没有专属单测——行为仅被 merge fixtures 间接覆盖"
+  ],
+  "appendix_topics": [
+    "llvm::EquivalenceClasses 的 member_iterator 与 LLVM-22 兼容变体",
+    "getOperationAliasInfo 的完整别名源清单（cast/view/select 族）",
+    "A5 迁移与 llvm-22 适配的提交历史"
+  ],
+  "evidence_index": [
+    { "id": "EV-101", "statement": "class shape: EquivalenceClasses facade, five public operations", "class": "source_fact", "refs": [{ "file": "bishengir/include/bishengir/Dialect/HIVM/Utils/MemrefAliasAnalysisState.h", "lines": "19-52" }] },
+    { "id": "EV-102", "statement": "seeding walks the scope and inserts every memref-typed value", "class": "source_fact", "refs": [{ "file": "bishengir/lib/Dialect/HIVM/Utils/MemrefAliasAnalysisState.cpp", "lines": "27-40" }] },
+    { "id": "EV-103", "statement": "union/query semantics with the memref-only guard", "class": "source_fact", "refs": [{ "file": "bishengir/lib/Dialect/HIVM/Utils/MemrefAliasAnalysisState.cpp", "lines": "42-53" }] },
+    { "id": "EV-104", "statement": "MergeVecScope is the sole consumer: construct → union loop → query loop", "class": "source_fact", "refs": [{ "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp", "lines": "526-545" }] },
+    { "id": "EV-105", "statement": "alias-pair sources: cast/view/select style ops", "class": "source_fact", "refs": [{ "file": "bishengir/lib/Dialect/HIVM/Utils/Utils.cpp", "lines": "1158-1200" }] },
+    { "id": "EV-106", "statement": "observed equivalence-class dump: subview∪block-arg non-singleton classes", "class": "runtime_fact", "refs": [{ "file": "bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-2.mlir" }] },
+    { "id": "EV-107", "statement": "tensor-form root yields a near-empty state (one singleton class)", "class": "runtime_fact" },
+    { "id": "EV-109", "statement": "no dedicated unit test; indirect coverage via merge fixtures", "class": "source_fact", "refs": [{ "file": "bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-2.mlir" }] },
+    { "id": "EV-110", "statement": "why union-find: transitive may-alias with near-linear amortized unions", "class": "reasoning" }
+  ]
+}

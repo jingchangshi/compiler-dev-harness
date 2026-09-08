@@ -10,7 +10,7 @@
   },
   "learning_objectives": [
     "Explain why VF call overhead motivates merging, in one sentence",
-    "Name the four hard legality gates without reading the source",
+    "Name the hard legality gates without reading the source (extract kind, region, sync ops, anchor pinning, gap movability — plus the level-1 empty-gap requirement)",
     "Contrast the L1 (tensor-level, pre-bufferization) and L2 (memref-level, post-bufferization) strategies and when each is chosen",
     "Describe what happens to the code between two merged calls, including anchor pinning",
     "State the single-use assumption (MVS-001) and the cross-block coverage gap (MVS-002) from memory"

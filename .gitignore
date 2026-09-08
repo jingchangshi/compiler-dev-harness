@@ -9,3 +9,6 @@ analysis/feedback/routes/
 analysis/feedback/context/
 # Automatic candidate feedback awaits human review via scripts/review-feedback.mjs.
 analysis/feedback/candidates/
+
+# Python bytecode cache
+__pycache__/

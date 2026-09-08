@@ -6,7 +6,8 @@ from pathlib import Path
 def main() -> int:
     ap=argparse.ArgumentParser(description='Create a Quarto-first compiler presentation project')
     ap.add_argument('--title', required=True)
-    ap.add_argument('--subtitle', default='目标 · Pipeline · IR · 合法性 · 缺陷')
+    ap.add_argument('--subtitle', default='目标 · 机制 · 关键决策 · 边界',
+                    help='subject-adaptive decks state their own subtitle; the pass-shaped default (目标 · Pipeline · IR · 合法性 · 缺陷) is an explicit opt-in for raw pass-source fallback decks')
     ap.add_argument('--output', required=True, type=Path)
     ap.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[1]/'assets'/'quarto-project-template')
     args=ap.parse_args()

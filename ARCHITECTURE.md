@@ -29,7 +29,7 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 | `compiler-observation-state.mjs` | per-agent correlation id 共享注册表(第 14.5 节) |
 | `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
 | `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
-| `compiler-explain-v1.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 路由段(第 17 章) |
+| `compiler-explain-v2.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 路由段(第 17 章) |
 | `compiler-explain-driver.mjs` | 教学 artifact bundle 的 plan/validate/readiness/stale 驱动(第 17 章) |
 | `scripts/teaching-schema.mjs` | Teaching Artifact Protocol v1 validators + 机械 readiness 门 + staleness(第 17 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
@@ -952,13 +952,62 @@ Bundle:`analysis/explanations/<date>-<slug>-<type>/{subject,evidence,dossier,han
 |---|---|
 | `scripts/teaching-schema.mjs` | 协议 v1 validators + 机械 readiness 门 + staleness(纯函数,无 I/O) |
 | `compiler-explain-driver.mjs` | plan/validate/readiness/stale 实现(bundle IO、git spawn、env `COMPILER_DEV_EXPLAIN_DIR`) |
-| `compiler-explain-v1.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 段(order 116) |
+| `compiler-explain-v2.cjs` | 本地 Cordis 插件:`compiler_explain` 工具 + always-on code-explanation 段(order 116) |
 | `skills/code-explanation/SKILL.md`(+`references/teaching-artifact-guide.md`) | 条件性 workflow 指南 + 字段手册 |
 | `scripts/test/teaching-schema.test.mjs`、`scripts/test/compiler-explain.test.mjs`、`scripts/test/teaching-dogfood.test.mjs` | 43 + 12 + 10 项测试(schema/可选字段/readiness/semantic 门/staleness/工具面/dogfood 语义回归 + generic 层反过拟合扫描) |
 | `agent.cordis.yml` | 新增 `compiler-explain` row |
 | `analysis/explanations/…`(dogfood) | 案例数据:`2026-09-08-mergevecscope-pass/`(Case A,pass,presentation,READY)、`2026-09-08-memref-alias-state-class/`(Case B,class,standard,READY) |
 
 与既有能力的边界:不重新实现 call graph/pass graph/attribute index/git history(消费 `compiler_knowledge`、`compiler_inspect`、git);不做 PPT renderer/图布局(visual spec 止于语义);feedback 协议与观测闭环保持原样(explain 任务经 `compiler_route` 以 `anchored-code-analysis`/`other` 声明)。
+
+---
+
+## 18. Phase T2:Presentation Consumer Closure(2026-09-08 已实现)
+
+目标:让 PresentationHandoff 成为 presentation system 的正式输入契约,关闭 `Explain → Teach → Handoff → Present` 的 producer/consumer 闭环。**不新增第五层知识模型**,不改 Teaching Artifact Protocol(保持 v1),不做 System Story 聚合、动态证据规划、通用图布局引擎。
+
+### 18.1 正式所有权契约
+
+```text
+Producer(Code Explanation,compiler_explain)        Consumer(presentation skill)
+──────────────────────────────────────              ──────────────────────────────
+what to understand & tell; mental model;            how to tell visually: slide 边界/数量、
+storyline; canonical example; decisions;            layout/typography/hierarchy、diagram geometry、
+comparisons; takeaways; semantic visual             CJK 宽度、code placement、QMD/Excalidraw/SVG/HTML
+requirements; evidence references
+```
+
+Consumer 在 READY+FRESH handoff 面前**不得**重新:判断 pass 为何存在、重推核心算法、重选 canonical example、重构 legality story、重发现 source evidence——除非 handoff 缺失/不 READY/STALE 或用户明确要求(此时刷新仍属 producer workflow)。
+
+### 18.2 三种输入模式(presentation skill)
+
+- **Mode A(首选)**:READY handoff。入口是确定性 preflight:`node scripts/preflight-handoff.mjs <bundle-dir>`——复用 Teaching Artifact Protocol owner(`teaching-schema.mjs` + `compiler-explain-driver.mjs`,**不复制 validator**),产出 `CONSUMABLE`(附 bounded consumption digest:storyline/visual specs/must-have ids/canonical example/takeaways/evidence index/dossier pointers)或明确拒绝:`NOT_CONSUMABLE`(schema/READY/subject id 不符)、`STALE_PRESENTATION_INPUT`(HEAD 或 source hash 漂移——先刷新 explanation bundle,禁止改 SHA 绕过)、`UNSUPPORTED_SCHEMA`(未来版本 fail clearly,绝不猜字段)。
+- **Mode B**:有 dossier 无 handoff → 回 code-explanation workflow 补 handoff(presentation side 不自己猜故事)。
+- **Mode C**:raw source/notes → 原有能力保留(establish evidence → extract story → slides),pass-shaped canonical narrative **降级为 Mode C fallback heuristic**;`handoff.storyline > fallback narrative` 是硬优先级。
+
+### 18.3 Consumer provenance:presentation-manifest.json
+
+Deck 侧轻量 manifest(**不是**第五层知识层):input(bundle_id/subject_id/subject_type/handoff_schema_version/handoff+dossier sha256/source_head/readiness_verdict/preflight)、consumed(storyline step→slide 映射,disposition=consumed/split/merged/appendix/omitted,deferred 必须记 reason——**禁止 silent drop**;must_have_visuals→assets+slides;optional 可不用;evidence_ids ⊆ handoff evidence_index)、adaptations(source_element/decision/reason)、generated。`check_project.py` 在 handoff-first 项目中委托 `validate_manifest.py` 强制上述覆盖;raw 项目可用 `required_sections.txt` 声明自己的叙事契约,否则仅结构检查 + warning。
+
+### 18.4 文件清单(Phase T2 增改)
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/preflight-handoff.mjs` | 消费者确定性预检 + consumption digest(复用协议 owner) |
+| `compiler-explain-v2.cjs` | v1→v2 重命名(模块缓存规则);always-on 段补 presentation 路由衔接 |
+| `skills/code-explanation/SKILL.md` | "Handing off to the presentation system" 段 |
+| `skills/compiler-architecture-presentation/SKILL.md` | 重写:三模式 + 所有权契约 + authority rules + manifest;canonical narrative 降级 |
+| `skills/…-presentation/scripts/spec_to_diagram.py` | 语义 visual spec → 有位图 spec → .excalidraw/.svg(有界形状解释:pipeline/before_after/decision_tree/state_transition/sequence/grid fallback,**非**通用布局引擎) |
+| `skills/…-presentation/assets/quarto-project-template/scripts/{check_project,validate_manifest}.py` | checker 三模式化 + manifest 覆盖检查 |
+| `skills/…-presentation/scripts/scaffold_quarto_project.py` | 中性默认 subtitle(pass 形需显式 opt-in) |
+| `scripts/test/presentation-consumer.test.mjs` | 14 项:契约(READY/NOT_READY/STALE/UNSUPPORTED_SCHEMA/id mismatch)+ 覆盖(silent drop/appendix reason/visual/evidence/hash/schema)+ non-Pass 回归 |
+| `analysis/presentations/2026-09-08-*` | Dogfood A(pass)与 B(class)端到端项目:QMD + Excalidraw/SVG + manifest(checker 通过;Quarto 不可用,HTML NOT RENDERED) |
+
+### 18.5 Dogfood 结论(详见 analysis/2026-09-08-phase-t2-presentation-consumer.md)
+
+- Dogfood A(mergevecscope-pass,pass@presentation):preflight CONSUMABLE → 7/7 storyline step 全消费(step 7 split,带 reason)→ 3/3 must-have visuals 映射(optional V4 未用)→ checker OK。Before/After 对比:新路径零 source discovery、零 story 重构、canonical example 未换、无 handoff 之外的技术 claim。
+- Dogfood B(memref-alias-state-class,class 升级 presentation,READY+CONSUMABLE):非 Pass 叙事自然(职责/生命周期/状态演化/边界),无伪造 pipeline/IR/legality 章节;visual kinds architecture/state_transition/sequence 落地。
+- 独立受众复核(fresh subagent,仅读 dossier/deck,禁源码):dossier 10/10 + pass 专属问题全 supported;两个 deck 的核心受众问题全 supported;发现并被修复——learning objective 门数笔误、MVS-002 方向歧义(以 EV-024 reasoning 显式记录为 unknown 而非掩饰)、deck 附录 EV range 指针与 manifest 不一致、"三次变化"标题歧义。**无 schema v2 需求**(既有字段足以承载全部发现)。
 
 ---
 
@@ -978,6 +1027,8 @@ Bundle:`analysis/explanations/<date>-<slug>-<type>/{subject,evidence,dossier,han
   `analysis/2026-09-07-phase-r1-5-ripwire-production-evidence-loop.md`(Phase R1.5)、
   `analysis/2026-09-07-phase-r1-6-r1-7-context-attribution-auto-rollout.md`(Phase R1.6+R1.7)、
   `analysis/2026-09-08-phase-t1-teaching-explanation.md`(Phase T1:teaching 能力实施与 dogfood 报告)、
+  `analysis/2026-09-08-phase-t2-presentation-consumer.md`(Phase T2:consumer closure 与 E2E dogfood 报告)、
+  `analysis/presentations/2026-09-08-*`(dogfood presentation 项目:QMD/Excalidraw/SVG/manifest)、`scripts/preflight-handoff.mjs`、
   `analysis/explanations/2026-09-08-*`(dogfood bundle:subject/evidence/dossier/handoff/readiness)。
   Phase R1 的实现依据另见
   上游 `redhat-et/ripwire`(c7914e8dc8429a318ffe24f857077e2b1d52d62e)`src/packtask.h`、`src/ingest.h`、

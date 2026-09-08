@@ -1,6 +1,6 @@
 /**
  * Tests for the compiler_explain tool surface: the plugin registration
- * (compiler-explain-v1.cjs), the plan/validate/readiness/stale commands
+ * (compiler-explain-v2.cjs), the plan/validate/readiness/stale commands
  * (compiler-explain-driver.mjs), and bundle persistence under a redirected
  * explanation root (COMPILER_DEV_EXPLAIN_DIR).
  */
@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const plugin = require('../../compiler-explain-v1.cjs')
+const plugin = require('../../compiler-explain-v2.cjs')
 
 const {
   planTeaching, loadBundle, validateBundleDir, readinessForBundle, saveReadiness,
