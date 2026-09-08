@@ -151,6 +151,18 @@ and destinations:
 | `AGENTS.local.md` §1–§8 (CANN, toolchain repair, Python/conda, accelerator, host capabilities, toolkits, workarounds) | C — host-local | `AscendNPU-IR/AGENTS.local.md` (source), materialized by prepare |
 | `AGENTS.md`/`AGENTS.local.md` provenance headers ("tracking copy/master") | D — stale | dropped; this README records provenance |
 
+### Re-hosting addendum (2026-09-08)
+
+By user decision, host-specific operational content from the removed
+tracking-master contract returned as host facts; for these rows the table
+above is superseded:
+
+| Old tracking-master section | New destination |
+|---|---|
+| §2 build container entry (`docker exec` into `s00653124_build`, `ASCEND_HOME_PATH` guard) | `AscendNPU-IR-Dev/hosts/user12364/AGENTS.local.md` §9 |
+| §2 `source set_docker_env.sh` | inlined into §9 (PATH reset, `/opt/cmake/bin`, conda `triton-py311`); the untracked target-repo script and its `info/exclude` entry were removed |
+| §4 canonical build / §5 incremental build | `AscendNPU-IR-Dev/hosts/user12364/AGENTS.local.md` §10 |
+
 Deploying into the real target repository is a human step (the agent only
 proposes): run the preparation command above inside the target worktree. If an
 unmanaged `AGENTS.local.md` is already there (as in the current

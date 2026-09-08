@@ -198,3 +198,90 @@ server-specific device limitation
 ```
 
 Keep this section short.
+
+---
+
+# 9. Build Container Entry (this host)
+
+> Restored from the removed tracking-master contract (old §2), migration
+> record in `contracts/README.md`; the user re-hosted it here on 2026-09-08.
+
+Before any compilation, CMake reconfiguration, native build, wheel build, or
+build-dependent test, first enter the build container:
+
+```bash
+docker exec -it \
+  -u shijingchang \
+  -e HOME=/home/shijingchang \
+  -w /home/shijingchang \
+  s00653124_build \
+  /bin/bash
+```
+
+Then, at the repository root inside the container, set up the environment
+(commands of the former untracked `set_docker_env.sh`, inlined here so the
+target worktree carries no extra untracked instruction file):
+
+```bash
+cd $HOME/workspace/AscendNPU-IR-Dev
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/bin:/opt/cmake/bin:$PATH
+source /opt/miniconda3/etc/profile.d/conda.sh
+conda activate triton-py311
+```
+
+Validate CANN is configured before build-dependent work (CANN setup itself:
+Section 2):
+
+```bash
+: "${ASCEND_HOME_PATH:?CANN environment is not configured. Prepare the host environment first.}"
+```
+
+---
+
+# 10. Canonical / Incremental Build (this host)
+
+> Restored from the removed tracking-master contract (old §4/§5), migration
+> record in `contracts/README.md`; the user re-hosted it here on 2026-09-08.
+
+Canonical full compiler build from the repository root (inside the container
+from Section 9), unless the user explicitly supplies another command for the
+current task. Do not derive or substitute another full build procedure by
+inspecting CMake or CI.
+
+```bash
+bash ./build-tools/build.sh   \
+  --c-compiler clang --cxx-compiler clang++   \
+  '--add-cmake-options=-DLLVM_ENABLE_LLD=ON'   \
+  --build-type Release \
+  --enable-assertion   \
+  -t --bisheng-compiler $HOME/workspace/ccec-toolkits/default/ccec_compiler/bin \
+  --disable-werror --disable-bishengir-werror \
+  --build-triton \
+  --build-shmem-template \
+  --build ./build --fast-build \
+  -j 64 \
+  2>&1 | tee build.log
+```
+
+Notes:
+
+- `--build-type Debug` may be required to debug cases.
+- `--enable-assertion` is required for `bishengir-compile -debug` (Pass log
+  dumps), at the cost of a longer `bishengir-compile` build time.
+- `--build-triton` depends on the `bishengir/triton` directory.
+- `--build-shmem-template` depends on the `third-party/shmem` submodule.
+- The `--bisheng-compiler` toolkit path follows Section 6 (per-run version
+  selection); `$HOME/workspace/ccec-toolkits/default/...` is this host's
+  default, not a fixed requirement.
+
+Standard incremental build for native compiler changes:
+
+```bash
+ninja -C build -j 64 bishengir-opt bishengir-compile
+```
+
+`ninja` does not read `MAX_JOBS` and defaults to `nproc` jobs; under memory
+pressure append `-j 64` to match the canonical build's parallelism. Do not
+spend substantial time reverse-engineering smaller Ninja targets unless the
+task explicitly requires one or a smaller target is already documented.
