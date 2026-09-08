@@ -6,7 +6,7 @@
 
 ```text
 starting HEAD  b7dc489 (Phase T2: presentation consumer closure)
-ending HEAD    <见下方 git 段>
+ending HEAD    19764f9 (Phase T3: system story composition; report recorded in follow-up commit)
 branch         main(jingchangshi/compiler-dev-harness)
 tree at start  clean(与 origin/main 同步)
 ```
@@ -183,7 +183,8 @@ case regression   replayed 9 session(s) against the baseline: no drift
 ## Git
 
 ```text
-final commit    <见 git 段>
-push            <见 git 段>
-working tree    <见 git 段>
+final commit    19764f9 "Phase T3: system story composition (multi-subject teaching closure)"
+                (59 files, +13724/−58; followed by this report-record commit)
+push            git push origin main → b7dc489..19764f9, remote main contains the commit
+working tree    clean
 ```
