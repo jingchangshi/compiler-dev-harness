@@ -40,6 +40,24 @@ NODE_W = 200
 NODE_H = 72
 GAP_X = 90
 GAP_Y = 90
+MAX_ROW_WIDTH = 1500  # measured-width flow wrapping (long CJK labels overflow fixed grids)
+
+
+def cjk_len(text: str) -> int:
+    return sum(1 for ch in str(text) if ord(ch) > 0x2E7F)
+
+
+def latin_len(text: str) -> int:
+    return len(str(text)) - cjk_len(text)
+
+
+def measure(node: dict) -> tuple[int, int]:
+    """Rendered box size for a node — must mirror make_excalidraw_diagram.py's
+    sizing rule exactly (box = max(spec width=NODE_W, min text width), height
+    fixed at NODE_H) so layouts reserve real space instead of assuming a grid."""
+    text = label(node)
+    w = max(NODE_W, 160, cjk_len(text) * 18 + latin_len(text) * 9 + 36)
+    return w, NODE_H
 
 
 def ordered_nodes(spec: dict) -> list:
@@ -56,18 +74,30 @@ def label(node: dict) -> str:
 
 
 def layout_chain(spec: dict, vertical: bool = False) -> dict:
-    """pipeline / state_transition: chain along order with wrapping."""
+    """pipeline / state_transition: chain along order with measured-width flow
+    wrapping — box sizes come from measure(), so long CJK labels never overlap
+    neighbors nor escape the bounding box."""
     nodes = ordered_nodes(spec)
     positioned = {}
-    for i, node in enumerate(nodes):
+    x = y = 0
+    width = height = 0
+    for node in nodes:
+        w, h = measure(node)
         if vertical:
-            x, y = 0, i * (NODE_H + GAP_Y)
+            positioned[node["id"]] = {"x": 0, "y": y}
+            y += h + GAP_Y
+            width = max(width, w)
+            height = y
         else:
-            row, col = divmod(i, WRAP)
-            x, y = col * (NODE_W + GAP_X), row * (NODE_H + GAP_Y)
-        positioned[node["id"]] = {"x": x, "y": y}
-    width = WRAP * (NODE_W + GAP_X) - GAP_X
-    height = ((len(nodes) + WRAP - 1) // WRAP) * (NODE_H + GAP_Y) - GAP_Y
+            if x > 0 and x + w > MAX_ROW_WIDTH:
+                x = 0
+                y += NODE_H + GAP_Y
+            positioned[node["id"]] = {"x": x, "y": y}
+            x += w + GAP_X
+            width = max(width, x - GAP_X)
+            height = max(height, y + h)
+    if vertical:
+        height = max(height - GAP_Y, NODE_H)
     return positioned, max(width, NODE_W), max(height, NODE_H)
 
 
@@ -138,11 +168,24 @@ def layout_levels(spec: dict) -> dict:
 def layout_grid(spec: dict) -> dict:
     nodes = ordered_nodes(spec)
     positioned = {}
-    for i, node in enumerate(nodes):
-        row, col = divmod(i, GRID_COLS)
-        positioned[node["id"]] = {"x": col * (NODE_W + GAP_X), "y": row * (NODE_H + GAP_Y)}
-    rows = ((len(nodes) + GRID_COLS - 1) // GRID_COLS) or 1
-    return positioned, GRID_COLS * (NODE_W + GAP_X) - GAP_X, rows * (NODE_H + GAP_Y) - GAP_Y
+    x = y = 0
+    row_h = 0
+    width = height = 0
+    per_row = 0
+    for node in nodes:
+        w, h = measure(node)
+        if x > 0 and (per_row >= GRID_COLS or x + w > MAX_ROW_WIDTH):
+            x = 0
+            y += row_h + GAP_Y
+            row_h = 0
+            per_row = 0
+        positioned[node["id"]] = {"x": x, "y": y}
+        x += w + GAP_X
+        row_h = max(row_h, h)
+        per_row += 1
+        width = max(width, x - GAP_X)
+        height = max(height, y + h)
+    return positioned, max(width, NODE_W), max(height, NODE_H)
 
 
 KIND_LAYOUT = {

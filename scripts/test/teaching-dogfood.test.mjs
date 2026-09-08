@@ -130,6 +130,9 @@ test('dogfood B: state transitions are real (union-find) and the reconstructed e
 test('generic layer source contains no subject-specific concepts', () => {
   const genericSources = [
     join(repoRoot, 'scripts', 'teaching-schema.mjs'),
+    // T3 composition layer: composition schema + compose driver
+    join(repoRoot, 'scripts', 'composition-schema.mjs'),
+    join(repoRoot, 'compiler-compose-driver.mjs'),
     join(repoRoot, 'compiler-explain-driver.mjs'),
     join(repoRoot, 'compiler-explain-v2.cjs'),
     // T2 consumer layer: preflight gate + presentation-side tooling

@@ -32,7 +32,8 @@ test('plugin registers the compiler_explain tool and the always-on policy sectio
   assert.equal(tools.length, 1)
   assert.equal(tools[0].name, 'compiler_explain')
   assert.equal(tools[0].parameters.required[0], 'command')
-  assert.deepEqual([...tools[0].parameters.properties.command.enum], ['plan', 'validate', 'readiness', 'stale'])
+  assert.deepEqual([...tools[0].parameters.properties.command.enum],
+    ['plan', 'validate', 'readiness', 'stale', 'compose-preflight', 'compose-plan', 'compose-validate', 'compose-render'])
   assert.equal(sections.length, 1)
   assert.equal(sections[0].name, 'code-explanation-policy')
   assert.ok(sections[0].text.includes('presentation handoff'))

@@ -1,0 +1,69 @@
+{
+  "artifact": "subject",
+  "schema_version": 1,
+  "subject_id": "enable-stride-align-pass",
+  "subject_type": "pass",
+  "name": "EnableStrideAlign",
+  "repository": "AscendNPU-IR",
+  "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+  "source_locations": [
+    { "file": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/EnableStrideAlign.cpp", "lines": "1-813" },
+    { "file": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/PropagateAlignUtil.cpp", "lines": "1-1992" },
+    { "file": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/AdjustAlignUtil.cpp", "lines": "1-610" },
+    { "file": "bishengir/include/bishengir/Dialect/HIVM/Transforms/AlignBuffer/Util.h", "lines": "1-167" },
+    { "file": "bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td", "lines": "846-897" },
+    { "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "lines": "485-494, 514-580, 696-700" },
+    { "file": "bishengir/include/bishengir/Dialect/Utils/Util.h", "lines": "571-613" },
+    { "file": "bishengir/include/bishengir/Dialect/HIVM/IR/HIVMAttrs.td", "lines": "1122-1129" },
+    { "file": "bishengir/include/bishengir/Tools/bishengir-compile/Options.td", "lines": "630-633" },
+    { "file": "bishengir/test/Dialect/HIVM/hivm-enable-storage-align.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/hivm-enable-stride-align-late-vf-cleanup.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/hivm-enable-stride-align-median-kernel.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/hivm-enable-storage-align-propagate-failure.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/bishenghivm-enable-stride-align-propagate-scope.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/enable-stride-align-rank-reducing-subview.mlir" },
+    { "file": "bishengir/test/Dialect/HIVM/stride-align-copy-src-no-backprop.mlir" }
+  ],
+  "scope": "The hivm-enable-stride-align pass itself: mark normalization, demand propagation (up to allocations, down to leaves, union across op operands), the alloc re-padding rewrite with strided-view rewiring, the copy-based propagation-failure fallback, arch-dependent pad-dim selection (membase vs RegBase), and the membase-only hivm.storage_aligned metadata stamp. Excludes the internals of the producer passes (MarkStrideAlign / PreMarkStrideAlign — separate bundle) and of downstream consumers.",
+  "related_entities": [
+    { "name": "MarkStrideAlign (hivm-mark-stride-align)", "relation": "upstream producer of the stride-align marks this pass consumes" },
+    { "name": "PreMarkStrideAlign (hivm-pre-mark-stride-align)", "relation": "regbase-only pre-pass marking vload roots to be spared from stride padding" },
+    { "name": "memref FoldAllocReshape", "relation": "runs immediately before this pass inside alignStoragePipeline" },
+    { "name": "AlignAllocSize (hivm-align-alloc-size)", "relation": "first pass of alignStoragePipeline, before the marking passes" },
+    { "name": "hivm.storage_aligned (HIVM_StorageAligned attr)", "relation": "metadata contract this pass stamps on device functions, membase only" },
+    { "name": "PropagateAlignUtil.cpp / AdjustAlignUtil.cpp / AlignBuffer Util.h", "relation": "shared helpers: mark creation, union/adjust of align info, shape computation, type propagation, copy fallback" },
+    { "name": "hivm.hir.copy / UnrealizedConversionCastOp", "relation": "fallback machinery when aligned types cannot be propagated into a user" }
+  ],
+  "why_this_subject": "It is the consumer half of the mark/enable storage-align pair and the only place where the requested alignment becomes a real buffer layout: a whole-pipeline story about who demands alignment (marks), who decides the final buffer shapes (this pass), and what later lowering receives (padded allocs behind strided views). It also carries a clean arch fork (membase pads the next dim, RegBase pads the marked dim) and an unconditional-vs-gated pipeline subtlety worth teaching.",
+  "provenance": {
+    "repository": "AscendNPU-IR",
+    "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+    "branch": "master",
+    "head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "analyzed_at": "2026-09-08T19:45:00Z",
+    "tool_versions": {
+      "driver": "compiler-explain-driver v1.1"
+    },
+    "runtime_verification": "none",
+    "source_files": [
+      { "path": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/EnableStrideAlign.cpp", "sha256": "7b420b70f17f5315913231dcdf9c8acd7710679ae8a7771452e8bd313aa2249e" },
+      { "path": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/PropagateAlignUtil.cpp", "sha256": "8085c11d909061742b0d72982c72ff9a8bfbbffb80d27aed6a5e02116b2d6aa0" },
+      { "path": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/AdjustAlignUtil.cpp", "sha256": "17abe3f3c9fadd210ab36e718ef9eb7f50f219253f9987b2b27223caf20e4183" },
+      { "path": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/MarkStrideAlign.cpp", "sha256": "91451a50b3f26ebd31895fc26142c70a0c4d89180cf1e83465ec0722d1c274ab" },
+      { "path": "bishengir/lib/Dialect/HIVM/Transforms/AlignBuffer/PreMarkStrideAlign.cpp", "sha256": "6f435e685a60d585c84c145926cbc05d80060dbb8c9e51f130ab98b91cd2dd5f" },
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/Transforms/AlignBuffer/Util.h", "sha256": "bc2621ca82de52cdd6bca9193f53a4640f192d7f594f9b83f3e9a5b755b0eaba" },
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td", "sha256": "4048349f67b9a6e159a75357344e40ba6e0a555b862f9c69fa130e25f225716b" },
+      { "path": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "sha256": "08aac62a64b5b5ae35527d05873e807d0c03a45f5cb49ca132d09dbe981d60f4" },
+      { "path": "bishengir/include/bishengir/Dialect/Utils/Util.h", "sha256": "92375534741c8a6ab880b142e52377a52b1c09a2c209ee6258d69cfa24efc4d1" },
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/IR/HIVMAttrs.td", "sha256": "ebe3d05af81c7602ef189f738736e6f19b3eedee589fcbc7bcd05864654904da" },
+      { "path": "bishengir/include/bishengir/Tools/bishengir-compile/Options.td", "sha256": "1b6f8cd03d5d70aaa2f6b2765a16e9c2dc26b989f2b7ce1e987239a12c304f87" },
+      { "path": "bishengir/test/Dialect/HIVM/hivm-enable-storage-align.mlir", "sha256": "71688d886201f220b517cff024216ff9dd94749a2a1e243ad866ac744962e64b" },
+      { "path": "bishengir/test/Dialect/HIVM/hivm-enable-stride-align-late-vf-cleanup.mlir", "sha256": "bed04771d8d510e43977b711608805e6ffd26ae2cacbbb67c662defb3a61f897" },
+      { "path": "bishengir/test/Dialect/HIVM/hivm-enable-stride-align-median-kernel.mlir", "sha256": "bf6baef96927abfcff7e4afb85eb1059e019bc1720d972d422a75aca750fab83" },
+      { "path": "bishengir/test/Dialect/HIVM/hivm-enable-storage-align-propagate-failure.mlir", "sha256": "7ac690a80d5d1e91bb8985a28413253c01e25327e585f66e987c9e0b35038a86" },
+      { "path": "bishengir/test/Dialect/HIVM/bishenghivm-enable-stride-align-propagate-scope.mlir", "sha256": "a29aee1644cb974fe856de642de88cca57ea91ac44de6c8dbf20ace09957250f" },
+      { "path": "bishengir/test/Dialect/HIVM/enable-stride-align-rank-reducing-subview.mlir", "sha256": "8376a30224e35f18793fdae5eabc63b31077fab020967e725ff97faecfd491b3" },
+      { "path": "bishengir/test/Dialect/HIVM/stride-align-copy-src-no-backprop.mlir", "sha256": "302bdf9e2f145c122c5102e8ebad6a7fb024aa78abc8c3c2170a3f7d3c3d509a" }
+    ]
+  }
+}

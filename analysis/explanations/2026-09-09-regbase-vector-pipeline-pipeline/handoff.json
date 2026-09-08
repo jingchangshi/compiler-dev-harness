@@ -1,0 +1,700 @@
+{
+  "artifact": "presentation_handoff",
+  "schema_version": 1,
+  "subject_id": "regbase-vector-pipeline-pipeline",
+  "subject_type": "pipeline",
+  "depth": "presentation",
+  "audience": {
+    "who": "compiler engineers with MLIR basics, new to the AscendNPU-IR RegBase path",
+    "setting": "internal tech-talk deck, ~20 minutes"
+  },
+  "learning_objectives": [
+    "说出这条链为什么存在:不规则的 tensor 计算 → 对齐的向量内存 IR,一个 pass 做不到",
+    "按顺序指出六个 pass 各自为下一级建立什么表示",
+    "解释两个关键选项门(enableVfMergeLevel、enableHIVMAutoStorageAlign)的取舍",
+    "知道到哪里下钻:每个 pass 的 child dossier 与 child deck"
+  ],
+  "storyline": [
+    {
+      "position": 1,
+      "role": "整体问题",
+      "claim": "A5 RegBase 目标要求 elementwise 计算以向量指令跑在对齐的 UB buffer 上,而前端给的是带 reshape 噪声的多维 tensor 链——这条 pipeline 就是两者之间的差距",
+      "dossier_section": "mental_model",
+      "evidence_refs": [
+        "SYS-EV-014"
+      ]
+    },
+    {
+      "position": 2,
+      "role": "系统心智模型",
+      "claim": "normalize → vectorize → merge → bufferize → merge → align:每一级把上一级的输出表示加工成下一级的输入表示",
+      "dossier_section": "mechanism",
+      "evidence_refs": [
+        "SYS-EV-001",
+        "SYS-EV-002",
+        "SYS-EV-003",
+        "SYS-EV-004"
+      ]
+    },
+    {
+      "position": 3,
+      "role": "端到端 transformation map",
+      "claim": "六个 requested pass 加五个 context 阶段的完整管线图——谁在哪里被谁调用、条件门在哪",
+      "dossier_section": "mechanism.stages",
+      "evidence_refs": [
+        "SYS-EV-001",
+        "SYS-EV-002",
+        "SYS-EV-003",
+        "SYS-EV-004",
+        "SYS-EV-009"
+      ]
+    },
+    {
+      "position": 4,
+      "role": "规范化阶段的角色与契约",
+      "claim": "PropagateReshape 先滑走 reshape 障碍,FlattenOps 再把 elementwise 链压成 1-D——向量器拿到的是平坦的 last-axis 域;两个 pass 的顺序是源码钉死的",
+      "dossier_section": "contracts",
+      "evidence_refs": [
+        "SYS-EV-001",
+        "SYS-EV-002",
+        "reshape::EV-015",
+        "flatten::EV-019"
+      ]
+    },
+    {
+      "position": 5,
+      "role": "向量化建立 VF 单元",
+      "claim": "AutoVectorizeV2 + OutlineVectorFunction 产出 hivm.vector_function 标注的 callees——这个 attr 就是 MergeVecScope 认领合并对象的全部依据(真实执行帧:outlined_vf_0/1/2)",
+      "dossier_section": "contracts",
+      "evidence_refs": [
+        "SYS-EV-012",
+        "av2::EV-015",
+        "mergevecscope::EV-002"
+      ]
+    },
+    {
+      "position": 6,
+      "role": "关键表示边界与 VF 粒度决策",
+      "claim": "tensor→memref 是全链最大的表示边界;MergeVecScope 围绕它有两个互斥位置(L1 前/L2 后),取舍由 enableVfMergeLevel 编码",
+      "dossier_section": "decisions",
+      "evidence_refs": [
+        "SYS-EV-003",
+        "mergevecscope::EV-022"
+      ]
+    },
+    {
+      "position": 7,
+      "role": "对齐意图与实现对分离",
+      "claim": "MarkStrideAlign 只在 memref 世界里给 UB 操作数打 storage_align 标注(真实执行帧);EnableStrideAlign 统一需求、重分配并保持逻辑形状——mark 是 enable 的唯一输入契约",
+      "dossier_section": "contracts",
+      "evidence_refs": [
+        "SYS-EV-004",
+        "SYS-EV-006",
+        "SYS-EV-010",
+        "SYS-EV-011"
+      ]
+    },
+    {
+      "position": 8,
+      "role": "worked example(拼接)",
+      "claim": "六帧走一遍:flatten→vectorize→merge→bufferize→mark→enable,每帧标注来源——四次真实执行 + 一次 child 执行 + 一次重构帧,不是单次端到端",
+      "dossier_section": "canonical_example",
+      "evidence_refs": [
+        "SYS-EV-013",
+        "SYS-EV-012",
+        "SYS-EV-010",
+        "SYS-EV-011",
+        "SYS-EV-015"
+      ]
+    },
+    {
+      "position": 9,
+      "role": "系统级边界",
+      "claim": "没有单一测试覆盖全链;V1 fallback 仍在;PropagateReshape 的 HIVM 位置与 regbase 无关;两个 flatten 是不同 pass——这些边界本身就是讲解内容",
+      "dossier_section": "boundaries",
+      "evidence_refs": [
+        "SYS-EV-015",
+        "SYS-EV-009",
+        "SYS-EV-008",
+        "av2::EV-020"
+      ]
+    }
+  ],
+  "visuals": [
+    {
+      "id": "V1",
+      "kind": "pipeline",
+      "title": "RegBase 向量管线:六个 pass 与五个 context 阶段",
+      "nodes": [
+        {
+          "id": "in",
+          "label": "tensor device funcs (多维 elementwise + reshape 噪声)",
+          "role": "input"
+        },
+        {
+          "id": "propreshape",
+          "label": "PropagateReshape",
+          "role": "requested (supporting)"
+        },
+        {
+          "id": "flatten",
+          "label": "FlattenOps (Tidy, register-based)",
+          "role": "requested (core)"
+        },
+        {
+          "id": "av2",
+          "label": "AutoVectorizeV2 + OutlineVectorFunction",
+          "role": "requested (core) + context"
+        },
+        {
+          "id": "mergel1",
+          "label": "MergeVecScope L1 (enableVfMergeLevel==1)",
+          "role": "requested (core), optional placement"
+        },
+        {
+          "id": "bufferize",
+          "label": "TensorCopyInsertion + OneShotBufferize",
+          "role": "context"
+        },
+        {
+          "id": "mergel2",
+          "label": "MergeVecScope L2 (enableVfMergeLevel==2)",
+          "role": "requested (core), optional placement"
+        },
+        {
+          "id": "premark",
+          "label": "PreMarkStrideAlign",
+          "role": "context"
+        },
+        {
+          "id": "mark",
+          "label": "MarkStrideAlign",
+          "role": "requested (core)"
+        },
+        {
+          "id": "foldalloc",
+          "label": "FoldAllocReshape",
+          "role": "context"
+        },
+        {
+          "id": "enable",
+          "label": "EnableStrideAlign",
+          "role": "requested (core)"
+        },
+        {
+          "id": "lower",
+          "label": "后端 lowering (decompose/layout/plan-memory)",
+          "role": "output"
+        }
+      ],
+      "edges": [
+        {
+          "from": "in",
+          "to": "propreshape"
+        },
+        {
+          "from": "propreshape",
+          "to": "flatten"
+        },
+        {
+          "from": "flatten",
+          "to": "av2"
+        },
+        {
+          "from": "av2",
+          "to": "mergel1"
+        },
+        {
+          "from": "mergel1",
+          "to": "bufferize"
+        },
+        {
+          "from": "bufferize",
+          "to": "mergel2"
+        },
+        {
+          "from": "bufferize",
+          "to": "premark",
+          "label": "L1 未选时直达"
+        },
+        {
+          "from": "mergel2",
+          "to": "premark"
+        },
+        {
+          "from": "premark",
+          "to": "mark"
+        },
+        {
+          "from": "mark",
+          "to": "foldalloc"
+        },
+        {
+          "from": "foldalloc",
+          "to": "enable"
+        },
+        {
+          "from": "enable",
+          "to": "lower"
+        }
+      ],
+      "ordering": [
+        "in → propreshape → flatten → av2",
+        "av2 → (mergel1 → bufferize → mergel2 | bufferize) → premark → mark → foldalloc → enable → lower",
+        "mergel1 与 mergel2 互斥"
+      ]
+    },
+    {
+      "id": "V2",
+      "kind": "state_transition",
+      "title": "表示形态如何一路变化(7 个状态,含输入态)",
+      "nodes": [
+        {
+          "id": "s0",
+          "label": "多维 tensor elementwise 链",
+          "role": "initial state"
+        },
+        {
+          "id": "s1",
+          "label": "1-D elementwise(collapse/expand 包裹)",
+          "role": "after normalization"
+        },
+        {
+          "id": "s2",
+          "label": "hivm.vector_function callees + call sites",
+          "role": "after vectorize+outline"
+        },
+        {
+          "id": "s3a",
+          "label": "合并后的 VF 调用图(tensor 级,L1 可选)",
+          "role": "optional state"
+        },
+        {
+          "id": "s4",
+          "label": "memref IR(tensor→memref)",
+          "role": "after bufferization"
+        },
+        {
+          "id": "s3b",
+          "label": "合并后的 VF 调用图(memref 级,L2 可选)",
+          "role": "optional state"
+        },
+        {
+          "id": "s5",
+          "label": "带 storage_align 标注的 memref",
+          "role": "after mark"
+        },
+        {
+          "id": "s6",
+          "label": "对齐分配 + strided 逻辑视图",
+          "role": "final state"
+        }
+      ],
+      "edges": [
+        {
+          "from": "s0",
+          "to": "s1",
+          "label": "PropagateReshape + FlattenOps"
+        },
+        {
+          "from": "s1",
+          "to": "s2",
+          "label": "AutoVectorizeV2 + OutlineVectorFunction"
+        },
+        {
+          "from": "s2",
+          "to": "s3a",
+          "label": "MergeVecScope L1(可选)"
+        },
+        {
+          "from": "s2",
+          "to": "s4",
+          "label": "未选 L1 时直达"
+        },
+        {
+          "from": "s3a",
+          "to": "s4",
+          "label": "OneShotBufferize"
+        },
+        {
+          "from": "s4",
+          "to": "s3b",
+          "label": "MergeVecScope L2(可选)"
+        },
+        {
+          "from": "s4",
+          "to": "s5",
+          "label": "未选 L2 时直达"
+        },
+        {
+          "from": "s3b",
+          "to": "s5",
+          "label": "MarkStrideAlign"
+        },
+        {
+          "from": "s5",
+          "to": "s6",
+          "label": "EnableStrideAlign"
+        }
+      ],
+      "ordering": [
+        "主干 s0→s1→s2→s4→s5→s6",
+        "s3a 只在 s2 与 s4 之间出现,或 s3b 只在 s4 之后出现——L1/L2 互斥"
+      ]
+    },
+    {
+      "id": "V3",
+      "kind": "data_flow",
+      "title": "跨 pass 契约:箭头上的货物",
+      "nodes": [
+        {
+          "id": "propreshape",
+          "label": "PropagateReshape",
+          "role": "requested (supporting)"
+        },
+        {
+          "id": "flatten",
+          "label": "FlattenOps",
+          "role": "requested (core)"
+        },
+        {
+          "id": "av2",
+          "label": "AutoVectorizeV2 + Outline",
+          "role": "requested (core)"
+        },
+        {
+          "id": "merge",
+          "label": "MergeVecScope L1/L2",
+          "role": "requested (core)"
+        },
+        {
+          "id": "bufferize",
+          "label": "OneShotBufferize",
+          "role": "context"
+        },
+        {
+          "id": "mark",
+          "label": "MarkStrideAlign",
+          "role": "requested (core)"
+        },
+        {
+          "id": "enable",
+          "label": "EnableStrideAlign",
+          "role": "requested (core)"
+        },
+        {
+          "id": "lower",
+          "label": "后端 lowering",
+          "role": "output"
+        }
+      ],
+      "edges": [
+        {
+          "from": "propreshape",
+          "to": "flatten",
+          "label": "已传播的 tensor IR(c1)"
+        },
+        {
+          "from": "flatten",
+          "to": "av2",
+          "label": "1-D elementwise 体(c2)"
+        },
+        {
+          "from": "av2",
+          "to": "merge",
+          "label": "hivm.vector_function callees(c3)"
+        },
+        {
+          "from": "merge",
+          "to": "bufferize",
+          "label": "更小的 VF 调用图(c4,L1)"
+        },
+        {
+          "from": "mark",
+          "to": "enable",
+          "label": "storage_align 标注(c5)"
+        },
+        {
+          "from": "enable",
+          "to": "lower",
+          "label": "对齐分配 + strided 视图(c6)"
+        }
+      ],
+      "ordering": []
+    },
+    {
+      "id": "V4",
+      "kind": "comparison",
+      "title": "L1 vs L2:同一条 merge,两个位置",
+      "nodes": [
+        {
+          "id": "l1",
+          "label": "L1: bufferize 前,tensor 级,mergeLevel=1",
+          "role": "variant A"
+        },
+        {
+          "id": "l2",
+          "label": "L2: bufferize 后,memref 级,mergeLevel=2",
+          "role": "variant B"
+        },
+        {
+          "id": "why1",
+          "label": "收益:bufferization 看到更小的调用图",
+          "role": "rationale A"
+        },
+        {
+          "id": "why2",
+          "label": "收益:用具体 memref alias 信息做合并决策",
+          "role": "rationale B"
+        }
+      ],
+      "edges": [
+        {
+          "from": "l1",
+          "to": "why1"
+        },
+        {
+          "from": "l2",
+          "to": "why2"
+        }
+      ],
+      "ordering": [
+        "两列并排,互斥由 enableVfMergeLevel 控制"
+      ]
+    }
+  ],
+  "must_have_visuals": [
+    "V1",
+    "V2"
+  ],
+  "optional_visuals": [
+    "V3",
+    "V4"
+  ],
+  "canonical_example": {
+    "summary": "STITCHED 六帧:flatten(已执行)→ vectorize+outline(已执行)→ merge( child bundle 已执行)→ bufferize(重构帧)→ mark(已执行)→ enable(已执行);每帧来源见 dossier.canonical_example.execution_trace",
+    "provenance": {
+      "kind": "test",
+      "source": "STITCHED from per-pass executions of committed tests; NOT one end-to-end run"
+    }
+  },
+  "key_takeaways": [
+    "先整形再向量化:1-D 形态是向量化的输入契约",
+    "VF 粒度是可调决策:L1/L2 双位置围绕 bufferization,互斥由一个选项控制",
+    "对齐意图(mark)与实现(enable)分离,tensor→memref 是最大表示边界",
+    "端到端例子是按 pass 拼接的真实帧,不是一次完整执行"
+  ],
+  "important_decisions": [
+    {
+      "id": "D1",
+      "question": "enableVfMergeLevel: L1(前) vs L2(后) 的取舍"
+    },
+    {
+      "id": "D2",
+      "question": "enableHIVMAutoStorageAlign: 意图门控、实现常开(无标注即 no-op)"
+    },
+    {
+      "id": "D3",
+      "question": "PropagateReshape 的目标相关参与:regbase 只在 HFusion 预 flatten 位"
+    }
+  ],
+  "appendix_topics": [
+    "legacy AutoVectorize V1 fallback 分支(enableAutoVectorizeV2=false)",
+    "membase(A3 侧)管线的对应 placement 差异",
+    "vsstb bank-conflict 标注与 PreMarkStrideAlign 的 vload 根保护",
+    "MergeVecScope tryMerge 内部合法性门(见 child deck)",
+    "AutoVectorizeV2 的 plan-then-apply 与 clone-commit 纪律(见 child deck)"
+  ],
+  "evidence_index": [
+    {
+      "id": "SYS-EV-001",
+      "class": "source_fact",
+      "statement": "buildHFusionRegBasePipeline 的 normalize 顺序:PropagateReshape → FoldTensorEmpty → CanonicalizeTensorReshape → FlattenOps(Tidy, register-based)"
+    },
+    {
+      "id": "SYS-EV-002",
+      "class": "source_fact",
+      "statement": "hfusionAutoVectorizePipeline:VFFusion → FlattenOps → … → AutoVectorizeV2 → OutlineVectorFunction;V1 fallback 分支"
+    },
+    {
+      "id": "SYS-EV-003",
+      "class": "source_fact",
+      "statement": "bufferizationPipeline:MergeVecScope L1(前)/L2(后)互斥双位置"
+    },
+    {
+      "id": "SYS-EV-004",
+      "class": "source_fact",
+      "statement": "alignStoragePipeline:PreMark+Mark(门控) → FoldAllocReshape → EnableStrideAlign(常开)"
+    },
+    {
+      "id": "SYS-EV-005",
+      "class": "source_fact",
+      "statement": "alignStorage 在 hivmPostBufferizationOptimizationPipeline 内 = memref 世界"
+    },
+    {
+      "id": "SYS-EV-006",
+      "class": "source_fact",
+      "statement": "Passes.td:mark 语义(storage_align 标注)与 enable 语义(按标注重分配,ModuleOp 防并行竞态)"
+    },
+    {
+      "id": "SYS-EV-008",
+      "class": "source_fact",
+      "statement": "hivm-flatten-ops 是 bufferize 后的另一个 flatten pass,与 hfusion-flatten-ops 同名不同物"
+    },
+    {
+      "id": "SYS-EV-009",
+      "class": "source_fact",
+      "statement": "PropagateReshape 的 HIVM 级位置仅在非 regbase 目标运行"
+    },
+    {
+      "id": "SYS-EV-010",
+      "class": "runtime_fact",
+      "statement": "已执行:mark 输出 annotation.mark {stride_align_dims, stride_align_value_in_byte}"
+    },
+    {
+      "id": "SYS-EV-011",
+      "class": "runtime_fact",
+      "statement": "已执行:enable 输出 memref.alloc {alignment = 64}"
+    },
+    {
+      "id": "SYS-EV-012",
+      "class": "runtime_fact",
+      "statement": "已执行:AV2+outline 输出 hivm.vector_function callees(_vf_0/1/2)"
+    },
+    {
+      "id": "SYS-EV-013",
+      "class": "runtime_fact",
+      "statement": "已执行:flatten 输出 1-D elementwise over collapsed views"
+    },
+    {
+      "id": "SYS-EV-015",
+      "class": "unknown",
+      "statement": "无单一端到端测试覆盖全链——例子为拼接帧"
+    },
+    {
+      "id": "flatten::EV-019",
+      "class": "reasoning",
+      "statement": "flatten 给向量化的动机(child reasoning,导入)"
+    },
+    {
+      "id": "av2::EV-015",
+      "class": "source_fact",
+      "statement": "OutlineVectorFunction 产出 VF callees(导入)"
+    },
+    {
+      "id": "mergevecscope::EV-002",
+      "class": "source_fact",
+      "statement": "MergeVecScope 收集 hivm::isVF 函数(导入)"
+    },
+    {
+      "id": "mergevecscope::EV-022",
+      "class": "reasoning",
+      "statement": "双位置的取舍理由(导入 reasoning)"
+    },
+    {
+      "id": "marksa::EV-002",
+      "class": "source_fact",
+      "statement": "标注的具体形态(createAlignMarkOp)(导入)"
+    },
+    {
+      "id": "marksa::EV-019",
+      "class": "source_fact",
+      "statement": "对齐单位 getHWAlignBytes(memory space)(导入)"
+    },
+    {
+      "id": "ensa::EV-004",
+      "class": "source_fact",
+      "statement": "enable 消费的标注格式(导入)"
+    },
+    {
+      "id": "ensa::EV-012",
+      "class": "source_fact",
+      "statement": "分配重写:padded alloc + strided subview(导入)"
+    },
+    {
+      "id": "reshape::EV-015",
+      "class": "source_fact",
+      "statement": "FlattenOps 通过 hasUnpropagateableCase 依赖 reshape 传播(导入)"
+    },
+    {
+      "id": "reshape::EV-016",
+      "class": "source_fact",
+      "statement": "元素顺序/数量不变量与 flip 合法性(导入)"
+    },
+    {
+      "id": "flatten::EV-010",
+      "class": "source_fact",
+      "statement": "FlattenOps placement A(buildHFusionRegBasePipeline)(导入)"
+    },
+    {
+      "id": "flatten::EV-011",
+      "class": "source_fact",
+      "statement": "FlattenOps placement B(hfusionAutoVectorizePipeline,enableSIMDVFFusion 分支)(导入)"
+    },
+    {
+      "id": "av2::EV-014",
+      "class": "source_fact",
+      "statement": "AutoVectorizeV2 的 pipeline placement 与上游准备(导入)"
+    },
+    {
+      "id": "av2::EV-020",
+      "class": "unknown",
+      "statement": "V1 fallback 文档陈旧(fallback 已移除)(导入 unknown)"
+    },
+    {
+      "id": "marksa::EV-014",
+      "class": "source_fact",
+      "statement": "MarkStrideAlign placement(alignStoragePipeline)(导入)"
+    },
+    {
+      "id": "marksa::EV-015",
+      "class": "source_fact",
+      "statement": "enableHIVMAutoStorageAlign 门选项(导入)"
+    },
+    {
+      "id": "marksa::EV-016",
+      "class": "source_fact",
+      "statement": "消费方契约:EnableStrideAlign 声明(导入)"
+    },
+    {
+      "id": "mergevecscope::EV-012",
+      "class": "source_fact",
+      "statement": "L1/L2 placement 事实(导入)"
+    },
+    {
+      "id": "reshape::EV-013",
+      "class": "source_fact",
+      "statement": "PropagateReshape 的 anti-regbase 条件位置(导入)"
+    },
+    {
+      "id": "reshape::EV-012",
+      "class": "source_fact",
+      "statement": "buildHFusionRegBasePipeline 的 propagate 位置(导入)"
+    },
+    {
+      "id": "ensa::EV-002",
+      "class": "source_fact",
+      "statement": "alignStoragePipeline 组成与常开尾段(导入)"
+    },
+    {
+      "id": "flatten::EV-014",
+      "class": "source_fact",
+      "statement": "tidy fixture:外部签名不变的证据(导入)"
+    },
+    {
+      "id": "mergevecscope::EV-015",
+      "class": "runtime_fact",
+      "statement": "已执行 merge-level=1 的合并输出(导入 runtime fact)"
+    },
+    {
+      "id": "mergevecscope::EV-016",
+      "class": "runtime_fact",
+      "statement": "已执行 merge-level=2 的合并输出(导入 runtime fact)"
+    },
+    {
+      "id": "SYS-EV-007",
+      "class": "source_fact",
+      "statement": "Passes.td 声明的四个 pass 契约(AV2/MergeVecScope/FlattenOps/PropagateReshape)"
+    }
+  ]
+}

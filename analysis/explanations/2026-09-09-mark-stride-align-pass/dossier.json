@@ -1,0 +1,587 @@
+{
+  "artifact": "teaching_dossier",
+  "schema_version": 1,
+  "subject_id": "mark-stride-align-pass",
+  "subject_type": "pass",
+  "depth": "standard",
+  "mental_model": "After bufferization, MarkStrideAlign walks each device function and decides, for every on-chip buffer an HIVM structured op touches, which dimension's stride must be padded so strided hardware accesses stay aligned to the 32-byte vector block; each decision is recorded as an annotation mark carrying a dimension list and a byte count. It rewrites nothing else — the marks are a contract handed to the enable-stride-align pass, which performs the actual re-allocation.",
+  "need": "On Ascend vector/block hardware, a strided access whose inter-row stride is not a multiple of the hardware alignment unit (32 bytes for UB/L1) either fails or is slow; some DMA/fixpipe modes additionally require specific N/M-stride multiples. Somebody must decide where those padding requirements apply and record them, but the decision needs op-level knowledge (which axis is discontinuous, which mode the DMA uses) that the allocator does not have.",
+  "responsibility": "For every HIVM structured op with on-chip (non-GM) memref operands — and, on RegBase, every vf-call argument — decide whether a stride-align requirement exists, which dimension it applies to, and how many bytes it requires, then attach that decision as an annotation mark on the buffer value; refuse loudly (pass failure) when the IR is not bufferized memref.",
+  "observable_outcome": "A module whose IR shape and types are unchanged except for new annotation.mark ops placed after buffer values, each carrying hivm.stride_align_dims = array<i32: dim...> and hivm.stride_align_value_in_byte = array<i32: bytes...> (e.g. {hivm.stride_align_dims = array<i32: 1>, hivm.stride_align_value_in_byte = array<i32: 32>}); buffers that need no alignment get no mark.",
+  "audience_contract": {
+    "who": "compiler engineers familiar with MLIR passes and bufferization who have never read the AlignBuffer directory",
+    "assumed_knowledge": "MLIR pass pipelines, memref layouts/strides, what bufferization produces",
+    "not_assumed": "Ascend memory spaces (UB/L1/L0C), fixpipe DMA modes, this pass's internals"
+  },
+  "system_context": {
+    "triggers": [
+      {
+        "role": "pipeline gate",
+        "entity": "enableHIVMAutoStorageAlign (EnableHIVMAutoStorageAlign option, bool, default true)",
+        "interaction": "alignStoragePipeline adds PreMarkStrideAlign and MarkStrideAlign only when this option is true; when false both passes are skipped entirely (EnableStrideAlign still runs and simply finds nothing to do)",
+        "evidence_refs": [
+          "EV-014",
+          "EV-015"
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "role": "pipeline producer",
+        "entity": "bufferizationPipeline (OneShotBufferize) inside buildLowerHIVMPipelines",
+        "interaction": "produces the memref-world IR the pass requires: hivm structured ops with pure buffer semantics, strided memref layouts, UB/L1 address spaces, and concrete alloc shapes",
+        "evidence_refs": [
+          "EV-014",
+          "EV-022"
+        ]
+      },
+      {
+        "role": "sibling producer (veto marks)",
+        "entity": "PreMarkStrideAlign (hivm-pre-mark-stride-align, run immediately before in the same pipeline)",
+        "interaction": "pre-marks DMA-loaded buffers whose data will be vload'd in vector functions with skip_stride_align_for_vload on the root alloc; MarkStrideAlign consults this in both walks and skips those buffers, because stride padding would create inter-row gaps that vldsx1 cannot load",
+        "evidence_refs": [
+          "EV-020"
+        ]
+      },
+      {
+        "role": "op producers",
+        "entity": "HIVM structured ops (hivm.hir.load/store/copy, elementwise ops, fixpipe, custom ops) with UB/L1/L0C memref operands",
+        "interaction": "provide the shapes, strides, address spaces, and mode attributes (dma_mode, dual-dst, tightly-coupled-buffer tiling_dim) from which the align decision is computed",
+        "evidence_refs": [
+          "EV-005",
+          "EV-006",
+          "EV-009"
+        ]
+      }
+    ],
+    "downstream": [
+      {
+        "role": "consumer pass",
+        "entity": "EnableStrideAlign (hivm-enable-stride-align, ModuleOp, runs right after memref FoldAllocReshape in the same alignStoragePipeline)",
+        "interaction": "consumes the marks verbatim: validates dims/bytes presence and equal length, propagates them up to root allocs and down to leaf operands, then re-allocates each marked alloc with padded static dims and a strided subview of the original shape",
+        "evidence_refs": [
+          "EV-016",
+          "EV-018"
+        ]
+      },
+      {
+        "role": "later lowering",
+        "entity": "HIVM decompose phases named around stride alignment (BEFORE/AFTER_HIVM_STRIDE_ALIGNMENT), InferHIVMDataLayout, and ConvertHIVMToStandard (isOpsAligned = enableHIVMAutoStorageAlign)",
+        "interaction": "the pipeline orders other passes around the mark/enable pair, and the conversion pass is told whether storage alignment happened",
+        "evidence_refs": [
+          "EV-014",
+          "EV-015"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "name": "post-bufferization device function",
+      "form": "func::FuncOp (non-host) containing HIVM structured ops on ranked memrefs with identity or strided layouts in UB/L1/L0C address spaces",
+      "description": "host functions are skipped at entry; tensor-typed operands and ops without pure buffer semantics are errors, not input shapes",
+      "evidence_refs": [
+        "EV-004",
+        "EV-005"
+      ]
+    },
+    {
+      "name": "architecture context",
+      "form": "archIsRegbased (isRegBasedArch) and archIs950 (isAscend950) read from the parent module's hacc.target",
+      "description": "module-level target info; selects the regbase vs A2/A3 decision path and the fixpipe/950 special cases",
+      "evidence_refs": [
+        "EV-005",
+        "EV-007",
+        "EV-011"
+      ]
+    },
+    {
+      "name": "PreMarkStrideAlign veto marks",
+      "form": "annotation.mark ops carrying skip_stride_align_for_vload on alloc-like roots of DMA-loaded, vload-bound buffers",
+      "description": "produced by the preceding pass; presence means 'do not mark this buffer'",
+      "evidence_refs": [
+        "EV-020"
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "annotation marks on buffer values",
+      "form": "annotation.mark ops inserted immediately after the marked value, with dense-i32 arrays hivm.stride_align_dims (which dimension's stride) and hivm.stride_align_value_in_byte (required stride multiple in bytes)",
+      "description": "default byte value is getHWAlignBytes(UB|L1) = BL = VL/8 = 32; fixpipe cases use per-mode table values; vsstb cases use (16*N+1)*element-width bytes; no mark where no requirement exists",
+      "evidence_refs": [
+        "EV-002",
+        "EV-004",
+        "EV-009",
+        "EV-017",
+        "EV-019"
+      ]
+    }
+  ],
+  "mechanism": {
+    "summary": "Five source-derived stages: gate and traverse the function's HIVM structured ops; decide whether the op/buffer needs a mark at all; compute the align dimension per architecture path; refine the decision per op kind; emit the annotation mark (or skip silently), with a parallel call-argument walk on RegBase.",
+    "stages": [
+      {
+        "name": "Gate & traverse",
+        "what": "skip host functions; capture regbase/950 architecture flags; walk ops keeping only HIVMStructuredOps whose operands are not all-GM; handle CustomOp/CustomMacroOp from per-arg align_dim argAttrs; require pure buffer semantics (else error)",
+        "where": "MarkStrideAlign.cpp:843-890",
+        "key_functions": [
+          "runOnOperation",
+          "noNeedAlign",
+          "markAlignedDim"
+        ],
+        "evidence_refs": [
+          "EV-005"
+        ]
+      },
+      {
+        "name": "Filter candidate ops",
+        "what": "skip last-dim transposes (alloc size already aligned), regbase reduce-with-index, all-rank-0 types, ops without a local (UB/L1/L0C) buffer; classify UB DMA ops (Load/Store/Copy) for later shortcuts",
+        "where": "MarkStrideAlign.cpp:892-913",
+        "key_functions": [
+          "isLastDimTranspose",
+          "isReduceWithIndex",
+          "isAnyOfLocalBuffer"
+        ],
+        "evidence_refs": [
+          "EV-006"
+        ]
+      },
+      {
+        "name": "Compute the align dimension",
+        "what": "regbase: drop all-ones shapes (except fixpipe), keep only UB-space memref types, build identity reassociation (A5 flatten already merged axes) and call getLastDiscontinuousDimRegBased — non-unit last-dim stride aligns the last non-unit axis; UB DMA ops with sub-low strides already aligned take a no-mark shortcut; fixpipe uses dtype/mode constraint tables for N and M strides and marks the root alloc for 3d-dot tiles; A2/A3 instead flattens via FlattenInterface and calls getLastDiscontinuousDim",
+        "where": "MarkStrideAlign.cpp:915-1009, 224-263, 721-824",
+        "key_functions": [
+          "getLastDiscontinuousDimRegBased",
+          "getLastDiscontinuousDim",
+          "isSubLowDimStrideAlign",
+          "isNotTailJumpOrStrideAlign",
+          "getLastDiscontinuousDimRegBasedForFixcctoub"
+        ],
+        "evidence_refs": [
+          "EV-007",
+          "EV-008",
+          "EV-009"
+        ]
+      },
+      {
+        "name": "Choose the mark target & refine",
+        "what": "take the op's UB target-space operands; for a single-UB-operand StoreOp whose operand is a trailing-unit rank-reduced subview, remap the align dim into result coordinates or retarget the mark to the subview source; skip operands whose root carries PreMarkStrideAlign's skip_stride_align_for_vload; refine the dim with adjustAlignDim, which drops marks for scalar-loop-lowered ops and implicit-transpose load/store and applies brc/reduce/deinterleave/copy special cases",
+        "where": "MarkStrideAlign.cpp:1011-1059; AdjustAlignUtil.cpp:517-549",
+        "key_functions": [
+          "getTargetSpaceOperands",
+          "fixAlignDimForSingleUBStoreSubview",
+          "shouldSkipStrideAlignForVLoad",
+          "adjustAlignDim"
+        ],
+        "evidence_refs": [
+          "EV-010",
+          "EV-013",
+          "EV-020"
+        ]
+      },
+      {
+        "name": "Emit marks (or fail loudly)",
+        "what": "markAlignedDim validates memref legality (ranked, identity/strided layout, dim in range) and creates the annotation mark with the dimension and byte count (default getHWAlignBytes = 32 for UB/L1); a second regbase-only walk does the same for vf-call arguments (skipping already-marked and non-i1 operands on 950) and adds vsstb bank-conflict marks for suitable transfer-writes in callees; any legality error interrupts the walk and the pass signals failure",
+        "where": "MarkStrideAlign.cpp:72-104, 1061-1113; PropagateAlignUtil.cpp:1777-1790",
+        "key_functions": [
+          "markAlignedDim",
+          "markAlignedDimForFixcctoub",
+          "createAlignMarkOp",
+          "markForVsstb",
+          "alignSizeForBankConflict"
+        ],
+        "evidence_refs": [
+          "EV-002",
+          "EV-004",
+          "EV-011",
+          "EV-019"
+        ]
+      }
+    ],
+    "control_flow": [
+      "the regbase pipeline (alignStoragePipeline) drives the pass once per function, gated by enableHIVMAutoStorageAlign, immediately after PreMarkStrideAlign",
+      "runOnOperation drives two full function walks in order: the structured-op walk, then (regbase only) the func.call-argument walk; each walk may mark, skip, or (on legality errors) interrupt",
+      "interruption from either walk becomes signalPassFailure; everything else is silent skip",
+      "the pass is the only writer in its stage: it only inserts annotation ops, and the consumer pass in the same pipeline performs all real rewriting"
+    ],
+    "data_flow": [
+      "decision inputs: operand memref types (shape/stride/layout/memory space) + op mode attributes (fixpipe dma_mode/dual-dst/tiling_dim, custom-op align_dim) + architecture flags -> (alignDim, alignBytes)",
+      "mark output: (alignDim, alignBytes) -> annotation.mark op after the buffer value (op operands, subview sources on the store fixup, alloc results for fixpipe 3d-dot, call operands for vf args)",
+      "veto input: PreMarkStrideAlign's skip_stride_align_for_vload mark on the traced root -> operand excluded from marking",
+      "the marks flow to EnableStrideAlign, which unions and propagates them along the value graph before re-allocating"
+    ],
+    "mutable_state": true,
+    "has_important_branching": true
+  },
+  "canonical_example": {
+    "provenance": {
+      "kind": "test",
+      "source": "bishengir/test/Dialect/HIVM/hivm-mark-stride-align-fixcctoub.mlir (CHECK expectations recorded from the fixture at HEAD 90037fe33; NOT executed in this analysis — runtime_verification is none)"
+    },
+    "initial_state": "func.func @test_nsize_b16_cs_n_nd_n_le_n (AIC core, Ascend950PR_9579): %alloc = memref.alloc() : memref<16x16xf16, #hivm.address_space<ub>> carrying a tightly-coupled-buffer mark, written by hivm.hir.fixpipe from an L0C (cc) alloc; no stride_align mark exists yet",
+    "inputs": "-hivm-mark-stride-align (no pass options; the pass has none — behavior is selected by pipeline gate and architecture)",
+    "execution_trace": [
+      "Gate & traverse: AIC func is not host; the fixpipe is an HIVMStructuredOp with a non-GM (UB) operand; buffer semantics are pure",
+      "Compute the align dimension: regbase path; fixpipe branch reads dma_mode (none -> ND/DN defaults), channel split (none), data width f16 -> B16; table row {B16, NZ2DN N, DualDst N} gives nSizeStride 16 elements",
+      "Emit: alignBytes = 16 * 16 bits / 8 = 32; markAlignedDimForFixcctoub targets the UB output operand %alloc",
+      "createAlignMarkOp inserts annotation.mark after %alloc with {hivm.stride_align_dims = array<i32: 1>, hivm.stride_align_value_in_byte = array<i32: 32>}"
+    ],
+    "important_states": [
+      "before the pass: %alloc has effects/tightly_coupled_buffer marks only",
+      "after the pass: %alloc additionally carries the stride-align mark with dim 1 and 32 bytes; nothing else in the function changed"
+    ],
+    "result": "AIC: annotation.mark %alloc {hivm.stride_align_dims = array<i32: 1>, hivm.stride_align_value_in_byte = array<i32: 32>} — exactly the fixture's CHECK line (:5); the companion negative case (fixture test 25) shows that a buffer whose last-dim stride is already 32 bytes gets AIC-NOT: annotation.mark",
+    "boundary_examples": [
+      "downstream effect of the same mark shape: a hand-written mark {dim 1, 32 bytes} on a memref<2x15xf16, ub> alloc leads -hivm-enable-stride-align to produce a padded memref<2x15x16xf16> alloc plus a strided<[240, 16]> subview (propagate-scope fixture, EV-018)",
+      "mark target fixup: a single-UB-operand store through a trailing-unit rank-reduced subview may retarget the mark to the subview source so propagation sees the true semantic axis (EV-010)",
+      "veto path: the same buffer marked skip_stride_align_for_vload by PreMarkStrideAlign receives no stride-align mark (EV-020)"
+    ]
+  },
+  "state_transitions": [
+    {
+      "phase": "structured-op walk",
+      "before": "hivm structured op on UB buffers, no stride_align marks anywhere on the operands",
+      "operation": "compute (dim, bytes), insert annotation.mark after each UB target-space operand (or the subview source on the store fixup)",
+      "after": "each marked value has one annotation.mark carrying hivm.stride_align_dims + hivm.stride_align_value_in_byte; op/types unchanged",
+      "reason": "the decision must live on the value so the consumer can propagate it to the root alloc",
+      "evidence_refs": [
+        "EV-002",
+        "EV-010"
+      ]
+    },
+    {
+      "phase": "fixpipe marking",
+      "before": "L0C->UB fixpipe writing a 2-D UB alloc (e.g. 16x16 f16, nz2nd)",
+      "operation": "look up N/M stride requirements in the dtype/mode tables; mark all UB target-space operands (and the root alloc for 3d-dot tiles)",
+      "after": "alloc carries e.g. {dim 1, 32 bytes} (B16/N:16) or {dim 1, 16 bytes} (B8/N:16); already-aligned strides produce no mark",
+      "reason": "fixpipe DMA modes hard-require specific N/M stride multiples the generic dim finder cannot express",
+      "evidence_refs": [
+        "EV-009",
+        "EV-017"
+      ]
+    },
+    {
+      "phase": "call-argument walk (regbase only)",
+      "before": "vf call argument buffers, unmarked",
+      "operation": "skip already-marked operands, compute align dim from continuous reassociations, mark; then markForVsstb adds bank-conflict marks for transfer-write-suitable callee inputs",
+      "after": "vf call operands (and vsstb candidates at rank-2 with (16N+1)*width bytes) carry marks; operands the callee vloads stay unmarked (veto)",
+      "reason": "vf arguments are buffers the structured-op walk does not see, and vsstb stores slow down on conflicting bank strides",
+      "evidence_refs": [
+        "EV-011",
+        "EV-020"
+      ]
+    },
+    {
+      "phase": "handoff to consumer",
+      "before": "marks scattered on leaf values (op operands, subviews, allocs)",
+      "operation": "EnableStrideAlign normalizes, propagates marks up to root allocations and down to leaves, unions per-op, re-allocates with padded dims",
+      "after": "padded alloc + strided subview replace the original alloc; the original mark contract is fully consumed",
+      "reason": "the mark is an intermediate representation of a layout requirement, not the layout change itself",
+      "evidence_refs": [
+        "EV-016",
+        "EV-018"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Does this op/buffer need a stride-align mark at all?",
+      "condition": "op kind, operand address spaces, shapes and existing strides; plus the PreMarkStrideAlign veto",
+      "outcomes": [
+        "no local (UB/L1/L0C) buffer, all-GM operands, all-rank-0, all-ones shape (non-fixpipe), host func -> no mark",
+        "last-dim transpose (alloc size already aligned), regbase reduce-with-index, scalar-loop-lowered ops, implicit-transpose load/store -> no mark",
+        "UB DMA op whose sub-low strides are already aligned (isSubLowDimStrideAlign && isNotTailJumpOrStrideAlign) -> no mark",
+        "last-dim stride already a multiple of the align value (fixture test 25) -> no mark",
+        "buffer root carries skip_stride_align_for_vload -> no mark, protecting vldsx1 vloads",
+        "otherwise -> mark"
+      ],
+      "reason": "marking is only correct where a requirement exists; the veto marks exist because a wrong mark would break vload contiguity",
+      "evidence_refs": [
+        "EV-005",
+        "EV-006",
+        "EV-007",
+        "EV-008",
+        "EV-013",
+        "EV-017",
+        "EV-020"
+      ],
+      "example_refs": [
+        "EV-017"
+      ]
+    },
+    {
+      "id": "D2",
+      "question": "Which dimension's stride must be aligned?",
+      "condition": "layout/strides of the UB memref types and the op's reassociation (identity on regbase post-flatten; FlattenInterface on A2/A3)",
+      "outcomes": [
+        "any operand with non-unit last-dim stride -> the last non-unit axis (getLastNotUnitDim)",
+        "UB DMA op with already-aligned sub-low strides -> none (shortcut)",
+        "multi-dim, unit-stride last dim -> the last discontinuous dim from the reassociation",
+        "fixpipe -> trailing reassociation index (N) and/or second-to-last (M) from the mode tables; 3d-dot tiles also align root-alloc dim 1"
+      ],
+      "reason": "the hardware requirement is about the stride of a non-innermost (discontinuous) axis, not the innermost contiguous one",
+      "evidence_refs": [
+        "EV-007",
+        "EV-008",
+        "EV-009"
+      ],
+      "example_refs": [
+        "EV-017"
+      ]
+    },
+    {
+      "id": "D3",
+      "question": "How many bytes must the stride be aligned to?",
+      "condition": "memory space of the marked buffer; op-specific tables",
+      "outcomes": [
+        "default: getHWAlignBytes(UB|L1) = BL = VL/8 = 32 bytes",
+        "fixpipe: per-(dtype, channel-split, NZ2ND/NZ2DN, loop-enhance, dual-dst) table entries converted as elements * dataWidth / 8 (e.g. 16, 32, 64 bytes)",
+        "vsstb bank-conflict: (shape[rank-2] * 16 / gcd(shape[rank-2], 16) + 1) * element byte width, i.e. the 512*N+32 byte Davinci recommendation in elements",
+        "custom ops: per-arg align_dim from argAttrs with the default byte value"
+      ],
+      "reason": "the byte value is the hardware contract being encoded into the mark",
+      "evidence_refs": [
+        "EV-004",
+        "EV-009",
+        "EV-019"
+      ]
+    },
+    {
+      "id": "D4",
+      "question": "Which value gets the mark, and what happens on illegal IR?",
+      "condition": "the op's UB target-space operands; store-through-subview shape; type/layout legality",
+      "outcomes": [
+        "each UB target-space operand is marked in place",
+        "single-UB-operand store through a trailing-unit rank-reduced subview -> dim remapped to result coordinates, or the mark retargeted to the subview source",
+        "tensor-typed operand, unranked memref, non-identity/non-strided layout, or dim out of range -> emitError and interrupt -> signalPassFailure"
+      ],
+      "reason": "the mark must sit where propagation to the root alloc sees the right semantic axis; illegal IR must fail the compile rather than silently drop the alignment requirement",
+      "evidence_refs": [
+        "EV-004",
+        "EV-010",
+        "EV-005"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "statement": "the pass only accepts bufferized IR: tensor-typed operands and ops without pure buffer semantics are hard errors ('Not bufferized.') that fail the pass",
+      "status": "guarded",
+      "evidence_refs": [
+        "EV-004",
+        "EV-005"
+      ]
+    },
+    {
+      "statement": "marked memrefs must be ranked with identity or strided layout; anything else ('UnrankedMemRef not supported.', 'Non-strided-memref not supported.') fails the pass",
+      "status": "guarded",
+      "evidence_refs": [
+        "EV-004"
+      ]
+    },
+    {
+      "statement": "the align dim must be within the memref rank ('align dim is too large.')",
+      "status": "guarded",
+      "evidence_refs": [
+        "EV-004"
+      ]
+    },
+    {
+      "statement": "marks are only ever created on UB (on-chip) values: candidates are filtered to local buffers and, on regbase, to UB address space; GM-only ops are skipped",
+      "status": "guarded",
+      "evidence_refs": [
+        "EV-005",
+        "EV-006",
+        "EV-007"
+      ]
+    },
+    {
+      "statement": "mark arrays must be equal-length (dims vs bytes) for the consumer to accept them; the producer guarantees this by construction (one dim per byte value per createAlignMarkOp call)",
+      "status": "verified",
+      "evidence_refs": [
+        "EV-002",
+        "EV-016"
+      ]
+    },
+    {
+      "statement": "buffers vetoed by PreMarkStrideAlign (vload'd DMA loads in VFs) must not be marked, because stride padding would break vldsx1's 128-element consecutive load",
+      "status": "guarded",
+      "evidence_refs": [
+        "EV-020"
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "statement": "the pass never rewrites ops, types, or layouts — it only inserts annotation.mark ops; the module's semantics before/after differ only by metadata",
+      "status": "verified",
+      "evidence_refs": [
+        "EV-002",
+        "EV-004",
+        "EV-010"
+      ]
+    },
+    {
+      "statement": "each mark is inserted immediately after the value it annotates, so the (dim, bytes) pair travels with the value and EnableStrideAlign can trace it through view-like ops to the root alloc",
+      "status": "verified",
+      "evidence_refs": [
+        "EV-002",
+        "EV-016"
+      ]
+    },
+    {
+      "statement": "the default stride-align unit for UB/L1 buffers is the hardware vector block: BL = VL/8 = 32 bytes",
+      "status": "verified",
+      "evidence_refs": [
+        "EV-019"
+      ]
+    }
+  ],
+  "assumptions": [
+    {
+      "statement": "on the regbase path, hfusion-flatten has already merged axes before this pass runs, so the identity reassociation is the correct view of the operand layout (in-code comment: 'In A5, memrefTypes is already the result of flattening')",
+      "status": "assumed",
+      "evidence_refs": [
+        "EV-007"
+      ]
+    },
+    {
+      "statement": "the fixpipe N/M stride tables enumerate the modes the hardware requires; a mode missing from the tables yields no mark (lookup returns -1), which the code treats as 'no requirement' rather than an error",
+      "status": "potential",
+      "evidence_refs": [
+        "EV-009"
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "category": "supported",
+      "statement": "HIVM structured ops with UB/L1/L0C memref operands on the regbase path (identity reassociation + UB DMA shortcuts + fixpipe tables), vf-call arguments on regbase (incl. vsstb bank-conflict marks), and A2/A3 structured ops implementing FlattenInterface",
+      "evidence_refs": [
+        "EV-005",
+        "EV-007",
+        "EV-009",
+        "EV-011"
+      ]
+    },
+    {
+      "category": "rejected_by_design",
+      "statement": "tensor (pre-bufferization) IR and ops without pure buffer semantics are errors; vload'd DMA buffers, implicit-transpose load/store, scalar-loop-lowered ops, last-dim transposes, and regbase reduce-with-index are deliberately not marked",
+      "evidence_refs": [
+        "EV-004",
+        "EV-005",
+        "EV-006",
+        "EV-013",
+        "EV-020"
+      ]
+    },
+    {
+      "category": "partially_supported",
+      "statement": "vsstb bank-conflict marking refuses operands used by memref.collapse_shape/memref.reshape — the in-code TODO notes padding would create discontinuous shapes those users cannot handle, so such operands stay unmarked",
+      "evidence_refs": [
+        "EV-011"
+      ]
+    },
+    {
+      "category": "unsupported",
+      "statement": "custom macros/ops without per-arg align_dim entries in argAttrs get nothing from that path; there is no pass option to force a mark — behavior is fully decided by the IR and the architecture",
+      "evidence_refs": [
+        "EV-005"
+      ]
+    },
+    {
+      "category": "unknown",
+      "statement": "the exact marks the generic structured-op path would choose for arbitrary kernels were not observed: the reviewed corpus only runs -hivm-mark-stride-align on fixpipe fixtures; other stride-align tests hand-author the producer marks",
+      "evidence_refs": [
+        "EV-017",
+        "EV-018",
+        "EV-024"
+      ]
+    }
+  ],
+  "placement": {
+    "applicable": true,
+    "why_here": "it sits in alignStoragePipeline (HIVMRegbasePipelines.cpp:485-494) right after AlignAllocSize and PreMarkStrideAlign and before memref FoldAllocReshape + EnableStrideAlign, inside hivmPostBufferizationOptimizationPipeline (called at :560), i.e. after bufferizationPipeline (:695) in buildLowerHIVMPipelines (:699) — exactly when buffer decisions (types, strides, address spaces, allocs) are final but the consumer can still rewrite allocations",
+    "why_not_earlier": "pre-bufferization the operands are tensors: markAlignedDim and the buffer-semantics check turn tensor IR into a pass failure, and neither strided memref layouts nor the allocs to be padded exist yet",
+    "why_not_later": "the whole downstream sequence — FoldAllocReshape, EnableStrideAlign's re-allocation, the AFTER_HIVM_STRIDE_ALIGNMENT decompose phase, InferHIVMDataLayout — depends on the marks existing; moving the pass later would leave the consumer re-allocating from stale or missing requirements",
+    "evidence_refs": [
+      "EV-014",
+      "EV-022"
+    ]
+  },
+  "key_takeaways": [
+    "MarkStrideAlign is the producer half of a two-pass contract: it computes where stride alignment is required (which buffer, which dimension, how many bytes) and records it as pure metadata — annotation.mark ops with hivm.stride_align_dims + hivm.stride_align_value_in_byte — changing nothing else.",
+    "The mark's default byte value is the hardware vector block BL = VL/8 = 32 bytes for UB/L1 buffers; fixpipe DMA modes override it with per-(dtype, mode) table values, and vsstb store inputs get bank-conflict strides of (16N+1) elements.",
+    "It must run post-bufferization by construction: tensor IR is a hard error, and its decision inputs (strided memref layouts, UB address space, concrete allocs) only exist in the memref world — it sits in alignStoragePipeline between PreMarkStrideAlign and EnableStrideAlign, inside the regbase post-bufferization pipeline.",
+    "EnableStrideAlign can rely on: marks present only where a requirement exists, dims/bytes arrays of equal length, marks placed immediately after the buffer value, and no marks on vload'd DMA buffers (PreMarkStrideAlign's skip_stride_align_for_vload veto) — it validates the first two and fails loudly if violated.",
+    "Failure is loud, skipping is silent: legality violations (tensor, unranked, non-strided layout, dim out of range) interrupt the walk and signal pass failure, while 'no requirement here' simply emits no mark."
+  ],
+  "extensions": {
+    "pass": {
+      "pass_arg": "func::FuncOp — def MarkStrideAlign : Pass<\"hivm-mark-stride-align\", \"func::FuncOp\"> (Passes.td:876-886); the pipeline instantiates it with pm.nest<func::FuncOp>().addPass(createMarkStrideAlignPass()); no pass-level options",
+      "operation_scope": "one device (non-host) function per invocation: walk 1 covers HIVM structured ops with non-GM memref operands (plus CustomOp/CustomMacroOp align_dim args); walk 2 (regbase only) covers func.call arguments feeding vf callees; module-level context (hacc.target) selects the architecture path",
+      "pipeline_placements": [
+        {
+          "pipeline": "regbase lower-hivm-pipeline -> hivmPostBufferizationOptimizationPipeline -> alignStoragePipeline",
+          "position": "alignStoragePipeline step 2 of 4: AlignAllocSize -> [PreMarkStrideAlign -> MarkStrideAlign] -> memref FoldAllocReshape -> EnableStrideAlign (HIVMRegbasePipelines.cpp:485-494, marks at :488-490)",
+          "gate": "hivmPipelineOptions.enableHIVMAutoStorageAlign (EnableHIVMAutoStorageAlign, bool, default true — Options.td:629-634)",
+          "evidence_refs": [
+            "EV-014",
+            "EV-015"
+          ]
+        },
+        {
+          "pipeline": "membase equivalent (HIVMPipelines.cpp alignStoragePipeline)",
+          "position": "same slot but without PreMarkStrideAlign: AlignAllocSize -> MarkStrideAlign -> FoldAllocReshape -> EnableStrideAlign (HIVMPipelines.cpp:377-384)",
+          "gate": "the same enableHIVMAutoStorageAlign option; ConvertHIVMToStandard is told via isOpsAligned (HIVMPipelines.cpp:539-543)",
+          "evidence_refs": [
+            "EV-015"
+          ]
+        }
+      ],
+      "ir_contract": {
+        "before": "post-bufferization memref IR: hivm structured ops with pure buffer semantics on ranked memrefs (identity or strided layout) in UB/L1/L0C address spaces; no stride_align annotations on the buffers it will mark",
+        "after": "identical IR plus inserted annotation.mark ops placed directly after the marked buffer values, each carrying {hivm.stride_align_dims = array<i32: dim...>, hivm.stride_align_value_in_byte = array<i32: bytes...>}; zero ops rewritten, zero types changed; buffers with no requirement carry no mark",
+        "evidence_refs": [
+          "EV-002",
+          "EV-004",
+          "EV-010",
+          "EV-017"
+        ]
+      },
+      "attributes": {
+        "creator": "creates annotation.mark ops carrying hivm.stride_align_dims and hivm.stride_align_value_in_byte (HIVMAttrs.td:1265-1276) — the 'stride align marks' of the pass summary; reads (never writes) hivm.skip_stride_align_for_vload, custom-op argAttrs align_dim, fixpipe dma_mode/dual-dst, and hivm.tiling_dim on tightly-coupled-buffer marks",
+        "consumer": "EnableStrideAlign consumes stride_align_dims/stride_align_value_in_byte as its sole steering input: it validates them, propagates them up to root allocs and down to leaves, unions them per op, and re-allocates marked allocs with padded static dims (EnableStrideAlign.cpp:61-80, 131-161, 359-445); the downstream hivm.storage_aligned func attr is set by the consumer on membase only",
+        "evidence_refs": [
+          "EV-016"
+        ]
+      },
+      "legality": "hard requirements (violation = pass failure): bufferized pure-buffer-semantics ops, ranked memref, identity/strided layout, align dim within rank. Silent skip (no mark): host funcs; all-GM operands; no local buffer; all-rank-0; all-ones shape (except fixpipe); last-dim transpose; regbase reduce-with-index; scalar-loop-lowered ops; implicit-transpose load/store; UB DMA with already-aligned sub-low strides; stride already aligned (fixture test 25); skip_stride_align_for_vload veto; collapse_shape/reshape users of vsstb candidates",
+      "rewrite": "none in the layout sense — annotation-only emission via createAlignMarkOp (PropagateAlignUtil.cpp:1777-1790); the physical transformation (padded alloc + strided subview + type propagation through view-like ops) belongs entirely to EnableStrideAlign"
+    }
+  },
+  "evidence_refs": [
+    "EV-001",
+    "EV-002",
+    "EV-004",
+    "EV-005",
+    "EV-006",
+    "EV-007",
+    "EV-008",
+    "EV-009",
+    "EV-010",
+    "EV-011",
+    "EV-013",
+    "EV-014",
+    "EV-015",
+    "EV-016",
+    "EV-017",
+    "EV-018",
+    "EV-019",
+    "EV-020",
+    "EV-022",
+    "EV-024"
+  ]
+}

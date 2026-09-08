@@ -1,0 +1,164 @@
+{
+  "artifact": "readiness_report",
+  "schema_version": 1,
+  "subject_id": "auto-vectorize-v2-pass",
+  "depth": "standard",
+  "mechanical": {
+    "checks": [
+      {
+        "name": "schema_valid",
+        "status": "pass",
+        "detail": "subject/evidence/dossier/handoff shapes valid"
+      },
+      {
+        "name": "identity",
+        "status": "pass",
+        "detail": "subject pass:AutoVectorizeV2"
+      },
+      {
+        "name": "purpose_explained",
+        "status": "pass",
+        "detail": "need/purpose present"
+      },
+      {
+        "name": "mental_model",
+        "status": "pass",
+        "detail": "2 sentence(s), identifier density 1%"
+      },
+      {
+        "name": "system_context",
+        "status": "pass",
+        "detail": "4 upstream/trigger, 4 downstream entries"
+      },
+      {
+        "name": "inputs_outputs",
+        "status": "pass",
+        "detail": "inputs/outputs/contracts present"
+      },
+      {
+        "name": "mechanism",
+        "status": "pass",
+        "detail": "8 source-derived stages"
+      },
+      {
+        "name": "canonical_example",
+        "status": "pass",
+        "detail": "example from test"
+      },
+      {
+        "name": "state_transitions",
+        "status": "pass",
+        "detail": "3 transitions"
+      },
+      {
+        "name": "decisions",
+        "status": "pass",
+        "detail": "7 decisions"
+      },
+      {
+        "name": "constraints",
+        "status": "pass",
+        "detail": "8 constraints, 4 invariants"
+      },
+      {
+        "name": "boundaries",
+        "status": "pass",
+        "detail": "5 boundary entries"
+      },
+      {
+        "name": "key_takeaways",
+        "status": "pass",
+        "detail": "5 takeaways"
+      },
+      {
+        "name": "fact_evidence",
+        "status": "pass",
+        "detail": "18 fact-class evidence records"
+      },
+      {
+        "name": "claims_trace_to_evidence",
+        "status": "pass",
+        "detail": "all explanation primitives cite ledger evidence"
+      },
+      {
+        "name": "extension_pass",
+        "status": "pass",
+        "detail": "pipeline placement + IR contract + legality/rewrite present"
+      }
+    ],
+    "verdict": "pass",
+    "failures": []
+  },
+  "semantic_review": {
+    "verdict": "ready",
+    "reviewer": "agent semantic review (honest, dossier-only comprehension standard)",
+    "reviewed_at": "2026-09-08T21:08:13.256Z",
+    "audience_questions": [
+      {
+        "question": "它是什么？",
+        "answer": "regbase 的自动向量化 pass：在每个 device 函数内决定哪些 linalg 工作可以合进同一个 tiled loop nest，用 transform-dialect 序列在函数克隆上执行 tile/fuse/vectorize，成功才整体替换原函数",
+        "sufficient": true
+      },
+      {
+        "question": "为什么存在？",
+        "answer": "vector core 只有当 elementwise 链、interleave 和 reduction 以单个 vector 函数内的一个 tiled 循环运行时才达到可用吞吐；这个分组是全局的、依赖 shape 与合法性的决策，必须在 tensor 级、outlining 和 bufferization 固化内存布局之前做出",
+        "sufficient": true
+      },
+      {
+        "question": "它处在什么上下文？",
+        "answer": "上游是规范化 +（仅 Triton 路径）VFFusion 的 _fused_ outlining 与 FlattenOps/PreVectorizationFusion；触发点是 regbase pipeline 中 enableAutoVectorizeV2 门（否则走 legacy AutoVectorize 分支）；下游是紧随的 OutlineVectorFunctionPass、条件性 TreeReduceV2、HFusionToVector 转换，以及 HIVM regbase 里合并 VF scope 的 MergeVecScope 和 bufferization",
+        "sufficient": true
+      },
+      {
+        "question": "输入和输出是什么？",
+        "answer": "输入：规范 tensor 级 linalg/hfusion 的 ModuleOp 与 pass options（vectorLength=256、maxFusedOps=15 等）；输出：fusable 组变成 outlined-loop-target-* 标注循环内的 vector ops，供 outline pass 物化为 <func>_outlined_vf_<i> 函数与 hivm.vector_function+no_inline 调用点；emit-transform-sequence 模式改为输出带 tag 的未执行 transform 序列；失败则模块保持原形并 signalPassFailure",
+        "sufficient": true
+      },
+      {
+        "question": "核心机制是什么？",
+        "answer": "计划-再应用：给 fusable op 打唯一标签并用 PlanContext 记录 loop/shape/bitwidth 与四类冲突；叶子分组后 BFS 吸收 producer 形成熔组（组内保持连续块序）；按节点最大元素字节宽把 vectorLength 字节预算切成分块大小；把这些决策发射成 Match/Tile/LoopFuse/FuseIntoContaining/Vectorize 的 transform 序列，在克隆上执行并做区域内验证，最后 commit-or-discard",
+        "sufficient": true
+      },
+      {
+        "question": "哪些状态最重要？",
+        "answer": "三个生命周期：函数克隆（original→clone→committed/erased 的全有全无）；标签属性（op 标签→transform 句柄→循环标签→被 outline pass 消费剥离）；冲突簿（op/sync/copy/group 四族，随吸收用 dissolvePivot 释放 pivot）；另有 VFFusion 冻结的 tree-reduce 选择属性，用完即删",
+        "sufficient": true
+      },
+      {
+        "question": "哪些决策决定行为？",
+        "answer": "D1 pipeline 选 V2 还是 legacy V1；D2 isFusableOp 分类；D3 canAccept 组门（数量/stack/memref/vsstb/公轴+冲突）；D4 producer 融合合法性（GenericOp-only MCF、DPS-init、tile-local、reduce+broadcast 轴）；D5 reduction 三条 tiling 路径与 one-tree-per-node；D6 失败即 warn+signalPassFailure（历史上有重试/fallback，fa682a1a3 已删）；D7 只发射序列还是执行",
+        "sufficient": true
+      },
+      {
+        "question": "与哪些组件交互？",
+        "answer": "VFFusionPass（上游 outlining 与冻结属性，仅 Triton 路径）、OutlineVectorFunctionPass（紧后物化 VF）、AutoVectorizeVerifier（函数内+流水线两处）、TreeReduceV2（消费 register-tree 标记循环）、HFusionToVector/LowerVectorMask/Inliner/PullSliceIntoVectorFunction（后续表示转换）、MergeVecScope+bufferization（在 HIVM regbase 合并 VF scope）、以及自有 PlanContext/FusedNode/VFStackInfoBuilder",
+        "sufficient": true
+      },
+      {
+        "question": "什么情况下不能工作或选择另一条路径？",
+        "answer": "非 device 函数与 cube scope 不规划；SIMT/matmul/sync/copy 邻接、GM RAW 别名对阻止同 VF；动态 shape 保守处理且循环融合失败会整体回滚（issue 378）；任一函数尝试失败即 signalPassFailure（此时另一条路径是流水线层面的 enableAutoVectorizeV2=false 走 legacy 分支——函数级 fallback 在本 HEAD 已不存在，restrictToFuncNames 的文档说法按陈旧文档记录为 unknown）",
+        "sufficient": true
+      },
+      {
+        "question": "最值得记住的 3～5 点是什么？",
+        "answer": "见 dossier.key_takeaways：plan-then-apply + 响亮失败；标签是贯穿 transform 解释器与 outline pass 的契约；表示变化是标量 linalg 组→outlined vector function；组员资格受 op 数/stack/冲突/单树多门约束；VFFusion 联动仅限 Triton 路径",
+        "sufficient": true
+      },
+      {
+        "question": "Pass 在 pipeline 的哪个位置，前后的 IR 形态是什么？",
+        "answer": "HFusionRegbasePipelines.cpp:434-451：位于（Triton 路径的）VFFusionPass:414、FlattenOps:415-423、PreVectorizationFusion:431、PrepareI1Nx1:432 及 canonicalization:433 之后，createOutlineVectorFunctionPass:451 之前；else 分支 :452-461 为 legacy AutoVectorize（maxVectorizeAxes=2）；两分支后都有 AutoVectorizeVerifierPass:462。前：规范 tensor 级 linalg；后：fusable 组为 labeled 循环内的 vector ops，紧接被 outline 为 hivm.vector_function 函数+调用点",
+        "sufficient": true
+      },
+      {
+        "question": "合法性条件是什么，什么情况下拒绝改写？",
+        "answer": "成员资格：isFusableOp 分类、组大小<maxFusedOps、VF stack slot 预算、公轴、无四族冲突、memref-DPS 组封闭、单节点至多一个 split-reduction 树；producer 另有 vsstb/DPS-init/GenericOp-only/tile-local/reduce-域检查。拒绝即候选保持独立或按 fallback leaf 处理——拒绝是正常控制流而非错误；整个函数级失败才走 clone 丢弃+signalPassFailure",
+        "sufficient": true
+      }
+    ],
+    "notes": "审读标准：熟悉 MLIR/bufferization 但未读过源的工程师仅凭 dossier 应能复述 pipeline 位置（含 else 分支与门条件）、plan-then-apply 的克隆纪律、四族冲突模型、三条 reduction tiling 路径与标签契约。所有 12 问均可由 dossier 单独回答；未执行编译器，runtime_verification=none，EV-020（legacy fallback 可达性）按 unknown 处理而非臆断；fail-safe 语义（fa682a1a3 删除 fallback）与 op 粒度冲突收集的潜在风险均按源码注释如实记录。深度为 standard：机制摘要级，未做 cost-model 逐条拆解。"
+  },
+  "verdict": "ready",
+  "reasons": [],
+  "driver": "compiler-explain-driver v1.1",
+  "evaluated_at": "2026-09-08T21:08:13.258Z"
+}

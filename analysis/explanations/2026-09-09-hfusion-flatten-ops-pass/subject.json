@@ -1,0 +1,58 @@
+{
+  "artifact": "subject",
+  "schema_version": 1,
+  "subject_id": "hfusion-flatten-ops-pass",
+  "subject_type": "pass",
+  "name": "HFusionFlattenOps",
+  "repository": "AscendNPU-IR",
+  "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+  "source_locations": [
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/FlattenOps.cpp", "lines": "1-141" },
+    { "file": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td", "lines": "225-253" },
+    { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "207-263, 389-461, 520-620" },
+    { "file": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Flattener/Flattener.h", "lines": "1-244" },
+    { "file": "bishengir/lib/Dialect/HFusion/Utils/Utils.cpp", "lines": "842-848" },
+    { "file": "bishengir/include/bishengir/Dialect/HIVM/IR/HIVMAttrs.td", "lines": "298-311" },
+    { "file": "bishengir/include/bishengir/Dialect/HFusion/IR/HFusionEnums.td", "lines": "236-242" },
+    { "file": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-flatten-ops.mlir", "lines": "1-129" },
+    { "file": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-tidy-flatten.mlir", "lines": "1-70" },
+    { "file": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-flatten-tidy-regbase.mlir", "lines": "1-60" }
+  ],
+  "scope": "The hfusion-flatten-ops pass itself: its function-eligibility gates, the greedy elementwise-collapse engine, the tidy dispatch into the analysis-driven Flattener, the pipeline placement sites in the regbase HFusion pipelines, and the observable behavior pinned by the FlattenOps test corpus. Excludes Flattener.cpp / DimensionAnalyzer internals (not read in this analysis) and the vectorization passes downstream.",
+  "related_entities": [
+    { "name": "FlattenElemwiseOpPattern", "relation": "the greedy rewrite pattern template (linalg/HFusion structured ops + linalg.generic)" },
+    { "name": "hfusion::detail::Flattener", "relation": "tidy engine, subclasses DimensionAnalyzer; owns collapse groups and per-op adjustment" },
+    { "name": "util::hasUnpropagateableCase", "relation": "register-based tidy guard (custom ops / complex control flow / scope ops)" },
+    { "name": "hivm::queryFuncCoreType / TFuncCoreType", "relation": "core-type gate: AIC/AIV-labeled functions skip the pass" },
+    { "name": "buildHFusionRegBasePipeline", "relation": "early regbase placement (after PropagateReshape/FoldTensorEmpty/CanonicalizeTensorReshape)" },
+    { "name": "hfusionAutoVectorizePipeline + enableSIMDVFFusion", "relation": "SIMD VF-fusion placement (after VFFusionPass, before AutoVectorizeV2)" },
+    { "name": "VFFusionPass", "relation": "immediate upstream pass in the enableSIMDVFFusion branch" },
+    { "name": "HFusionAutoVectorizeV2Pass / OutlineVectorFunctionPass", "relation": "downstream vectorization consumers of the flattened IR" },
+    { "name": "PropagateReshape / FoldTensorEmpty / CanonicalizeTensorReshape", "relation": "fixed shape-cleanup predecessors at both regbase sites" },
+    { "name": "canonicalizationPipeline (AfterFlattenBeforeAutoSchedule / AfterAutoSchedule)", "relation": "cleanup consumer running right after flatten in every site" }
+  ],
+  "why_this_subject": "Phase T3 dogfood for the multi-pass system story: this pass is the shape-normalization step that hands 1-D-formed elementwise IR to the vector pipeline, so its guards and placements are the bridge between HFusion-level fusion and AutoVectorizeV2. It is also a well-bounded teaching subject: a 141-line pass file that dispatches to two very different engines (local greedy rewrite vs whole-function analysis), with a real test corpus pinning observable behavior.",
+  "provenance": {
+    "repository": "AscendNPU-IR",
+    "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+    "branch": "master",
+    "head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "analyzed_at": "2026-09-08T18:57:03Z",
+    "tool_versions": {
+      "driver": "compiler-explain-driver v1.1"
+    },
+    "runtime_verification": "none",
+    "source_files": [
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/FlattenOps.cpp", "sha256": "f24fad6b4e449a9c88d2494299f83c95a872ec2888a2d8b5b6c1a7822dd5ec85" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td", "sha256": "4ae45e0518ab094f2d6fd22bb10db11eb7aeb90a9d31e23703d3511c02796f91" },
+      { "path": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "sha256": "ec6bd83d3fd04217369e63c1235d671566dc99254c7845e1132811e7d9d6b524" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Flattener/Flattener.h", "sha256": "b12d247449d3672f2cb368edd7f11b9a195c2f7fd81375a76660796fe4e2e0ae" },
+      { "path": "bishengir/lib/Dialect/HFusion/Utils/Utils.cpp", "sha256": "32a4dcffb7bdc3537ea0b349c397091b519eb221c8854a8a9bd3aa8fbfdf2727" },
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/IR/HIVMAttrs.td", "sha256": "ebe3d05af81c7602ef189f738736e6f19b3eedee589fcbc7bcd05864654904da" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/IR/HFusionEnums.td", "sha256": "2f9e590b34fdcc71201393daf63a70e9d1034324cae356afe34a4880fad41ac2" },
+      { "path": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-flatten-ops.mlir", "sha256": "b2d39977dfdf2389579295a30c854451537c480af5929b7c154554c869ac43b1" },
+      { "path": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-tidy-flatten.mlir", "sha256": "31e3b94c85b80478b236c396fc1092352f8edfa0ce1a7dc142930dcc8a64085f" },
+      { "path": "bishengir/test/Dialect/HFusion/FlattenOps/hfusion-flatten-tidy-regbase.mlir", "sha256": "6b383088b05be10ab22b121c854ac7f251aa53a38213a52f4d841fe7157c0978" }
+    ]
+  }
+}

@@ -1,0 +1,227 @@
+{
+  "artifact": "readiness_report",
+  "schema_version": 1,
+  "subject_id": "regbase-vector-pipeline-pipeline",
+  "depth": "presentation",
+  "mechanical": {
+    "checks": [
+      {
+        "name": "schema_valid",
+        "status": "pass",
+        "detail": "subject/evidence/dossier/handoff shapes valid"
+      },
+      {
+        "name": "identity",
+        "status": "pass",
+        "detail": "subject pipeline:RegBase Vector Pipeline (HFusion → HIVM)"
+      },
+      {
+        "name": "purpose_explained",
+        "status": "pass",
+        "detail": "need/purpose present"
+      },
+      {
+        "name": "mental_model",
+        "status": "pass",
+        "detail": "2 sentence(s), identifier density 2%"
+      },
+      {
+        "name": "system_context",
+        "status": "pass",
+        "detail": "3 upstream/trigger, 1 downstream entries"
+      },
+      {
+        "name": "inputs_outputs",
+        "status": "pass",
+        "detail": "inputs/outputs/contracts present"
+      },
+      {
+        "name": "mechanism",
+        "status": "pass",
+        "detail": "9 source-derived stages"
+      },
+      {
+        "name": "two_views",
+        "status": "pass",
+        "detail": "implementation and conceptual views present"
+      },
+      {
+        "name": "canonical_example",
+        "status": "pass",
+        "detail": "example from test"
+      },
+      {
+        "name": "state_transitions",
+        "status": "not_applicable",
+        "detail": "subject declares no significant mutable state — no fabricated transitions required"
+      },
+      {
+        "name": "decisions",
+        "status": "pass",
+        "detail": "4 decisions"
+      },
+      {
+        "name": "constraints",
+        "status": "pass",
+        "detail": "3 constraints, 4 invariants"
+      },
+      {
+        "name": "boundaries",
+        "status": "pass",
+        "detail": "5 boundary entries"
+      },
+      {
+        "name": "key_takeaways",
+        "status": "pass",
+        "detail": "5 takeaways"
+      },
+      {
+        "name": "fact_evidence",
+        "status": "pass",
+        "detail": "13 fact-class evidence records"
+      },
+      {
+        "name": "claims_trace_to_evidence",
+        "status": "pass",
+        "detail": "all explanation primitives cite ledger evidence"
+      },
+      {
+        "name": "placement",
+        "status": "pass",
+        "detail": "placement explained"
+      },
+      {
+        "name": "extension_pipeline",
+        "status": "not_applicable",
+        "detail": "no required extension for pipeline"
+      },
+      {
+        "name": "handoff_storyline",
+        "status": "pass",
+        "detail": "9 storyline steps"
+      },
+      {
+        "name": "handoff_visuals",
+        "status": "pass",
+        "detail": "4 visual specs"
+      },
+      {
+        "name": "handoff_takeaways",
+        "status": "pass",
+        "detail": "4 takeaways"
+      },
+      {
+        "name": "composition_provenance",
+        "status": "pass",
+        "detail": "composed_at 2026-09-08T21:18:28Z, source_head 90037fe3371c"
+      },
+      {
+        "name": "requested_coverage",
+        "status": "pass",
+        "detail": "all 6 requested component(s) accounted for"
+      },
+      {
+        "name": "component_dispositions",
+        "status": "pass",
+        "detail": "6 component(s): hfusion-flatten-ops-pass=core, propagate-reshape-pass=supporting, auto-vectorize-v2-pass=core, mergevecscope-pass=core, mark-stride-align-pass=core, enable-stride-align-pass=core"
+      },
+      {
+        "name": "bridge_evidence",
+        "status": "pass",
+        "detail": "7 bridge(s) (3 data_flow, 4 control_flow), all evidence-resolved; every bridge carries a transferred contract"
+      },
+      {
+        "name": "composition_conflicts",
+        "status": "pass",
+        "detail": "no composition conflicts recorded"
+      },
+      {
+        "name": "representation_boundaries",
+        "status": "pass",
+        "detail": "4 representation boundary(ies): multi-dim elementwise linalg/hfusion ops → 1-D elementwise bodies over collapsed views; scalar elementwise ops in the entry function → outlined hivm.vector_function callees with call sites; tensor-level IR (VF callees on tensors) → memref-level IR after TensorCopyInsertion + OneShotBufferize; unannotated memref.alloc → padded aligned alloc behind strided logical view (e.g. alignment = 64)"
+      },
+      {
+        "name": "end_to_end_flow",
+        "status": "pass",
+        "detail": "9-stage end-to-end flow"
+      },
+      {
+        "name": "child_inputs",
+        "status": "pass",
+        "detail": "6 child bundle input(s) declared"
+      }
+    ],
+    "verdict": "pass",
+    "failures": []
+  },
+  "semantic_review": {
+    "verdict": "ready",
+    "audience_questions": [
+      {
+        "question": "它是什么？",
+        "answer": "RegBase(A5)向量化编译路径:六个 requested pass 与五个 context 阶段把多维 tensor elementwise 计算变成对齐的向量内存 IR。",
+        "sufficient": true
+      },
+      {
+        "question": "为什么存在？",
+        "answer": "前端给的是带 reshape 噪声的多维 tensor 链,硬件要求向量指令跑在对齐的 UB buffer 上;没有任何单一 pass 能同时完成整形、向量化、粒度控制与对齐。",
+        "sufficient": true
+      },
+      {
+        "question": "它处在什么上下文？",
+        "answer": "上承 HFusion 前端(tensor IR + 管线选项),下接 AFTER_HIVM_STRIDE_ALIGNMENT decompose/layout/plan-memory;由 buildHFusionRegBasePipeline 与 buildLowerHIVMPipelines 串联。",
+        "sufficient": true
+      },
+      {
+        "question": "输入和输出是什么？",
+        "answer": "输入:tensor 级 device functions + enableVfMergeLevel/enableHIVMAutoStorageAlign/enableFlatten 等选项;输出:对齐的 memref IR(padded alloc + strided 逻辑视图,零残留标注)与确定粒度的 VF 调用图。",
+        "sufficient": true
+      },
+      {
+        "question": "核心机制是什么？",
+        "answer": "normalize → vectorize+outline → merge(L1 可选)→ bufferize → merge(L2 可选)→ mark → enable,九阶段端到端流(dossier.mechanism.stages)。",
+        "sufficient": true
+      },
+      {
+        "question": "哪些状态最重要？",
+        "answer": "表示形态状态链:多维 tensor → 1-D → VF callees → (合并) → memref → 标注 → 对齐分配;管线本身无可变状态,状态在 IR 里。",
+        "sufficient": true
+      },
+      {
+        "question": "哪些决策决定行为？",
+        "answer": "四个:dossier.decisions——L1/L2 互斥选择、enableHIVMAutoStorageAlign 门控意图、PropagateReshape 的目标相关参与、flatten 变体与 Triton 路径条件。",
+        "sufficient": true
+      },
+      {
+        "question": "与哪些组件交互？",
+        "answer": "上游前端与选项;下游 lowering;内部六个 pass 通过五条事实支撑的契约交接(reshape→flatten→vectorize→merge→bufferize→mark→enable)。",
+        "sufficient": true
+      },
+      {
+        "question": "什么情况下不能工作或选择另一条路径？",
+        "answer": "enableVfMergeLevel=0 不合并;enableAutoVectorizeV2=false 走 V1 fallback(未覆盖);非 regbase 目标启用 PropagateReshape 的 HIVM 位;无标注时 enable 是 no-op;门关闭时全链不标注。",
+        "sufficient": true
+      },
+      {
+        "question": "最值得记住的 3～5 点是什么？",
+        "answer": "dossier.key_takeaways 五条:先整形再向量化、VF 粒度可调、意图/实现分离、tensor→memref 是最大边界、例子是拼接帧。",
+        "sufficient": true
+      },
+      {
+        "question": "阶段顺序的证据是什么？",
+        "answer": "五个 source_fact 管线跨度(SYS-EV-001..005)逐行钉死每个子管线的 pass 顺序与互斥条件;四个 runtime_fact 证明关键 pass 单独可执行。",
+        "sufficient": true
+      },
+      {
+        "question": "表示形态在哪些边界发生转换？",
+        "answer": "四个 representation_boundaries:多维→1-D、scalar→VF callees、tensor→memref、无标注→对齐分配,每条都有证据。",
+        "sufficient": true
+      }
+    ],
+    "notes": "Semantic review performed by the composer against the dossier+composition alone (no source re-read during review). Mechanical floor: composition cross-checks all pass (coverage 6/6, 7 bridges evidence-resolved, 0 conflicts, 4 representation boundaries, 9-stage flow). Known honest limits recorded: stitched example (SYS-EV-015), V1 fallback drift (av2::EV-020), membase stamp unknown (ensa::EV-019)."
+  },
+  "verdict": "ready",
+  "reasons": [],
+  "driver": "compiler-explain-driver v1.1",
+  "evaluated_at": "2026-09-08T21:22:23.318Z"
+}

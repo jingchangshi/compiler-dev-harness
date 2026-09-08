@@ -1,0 +1,61 @@
+{
+  "artifact": "subject",
+  "schema_version": 1,
+  "subject_id": "propagate-reshape-pass",
+  "subject_type": "pass",
+  "name": "PropagateReshape",
+  "repository": "AscendNPU-IR",
+  "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+  "source_locations": [
+    { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp", "lines": "1-110" },
+    { "file": "bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td", "lines": "60-92" },
+    { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp", "lines": "1232-1409" },
+    { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateExpandUp.cpp", "lines": "1281-1407" },
+    { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/SwapCollapseExpand.cpp", "lines": "42-103" },
+    { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateNearEndExpandDown.cpp", "lines": "118-187" },
+    { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "207-228, 502-596" },
+    { "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "lines": "320-330, 660-683" },
+    { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-a5-regbase.mlir", "lines": "1-45" },
+    { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-regbased-unit-dim.mlir", "lines": "1-45" },
+    { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-propagatable-ops.mlir", "lines": "1-53" }
+  ],
+  "scope": "The tensor-dialect propagate-reshape pass itself: its func::FuncOp-level skip gates, the option-gated pattern set (PropagateCollapseDown / PropagateExpandUp / SwapCollapseExpand / PropagateNearEndExpandDown and the memref companions), all its pipeline placements including conditional ones, and its legality gates. Excludes the MemRef-Transforms PropagateReshape directory's own pass definitions, FlattenOps internals, and downstream lowering.",
+  "related_entities": [
+    { "name": "FlattenOps (hfusion-flatten-ops, Tidy/registerBased)", "relation": "immediate downstream consumer in the two forRegbased flatten placements; propagate-reshape normalizes reshape placement before it" },
+    { "name": "canonicalizationPipeline / FoldTensorEmpty / CanonicalizeTensorReshape", "relation": "sibling passes bracketing propagate-reshape in every placement" },
+    { "name": "HFusionToHIVM / TensorToHIVM / ConvertToHIVMOp conversions", "relation": "upstream reshape producers on the HIVM side (brc/reduce same-rank constraint inserts reshapes)" },
+    { "name": "OneShotBufferize / hivmPreBufferizationOptimizationPipeline", "relation": "downstream: the forHIVM placement runs in the pre-bufferization optimization pipeline" },
+    { "name": "hacc::utils::isRegBasedArch", "relation": "the target predicate that decides which placements and option shapes apply" },
+    { "name": "AutoVectorizeV2 / hfusionAutoVectorizePipeline", "relation": "later regbase stage that benefits from the flattened, stable shapes propagate-reshape helps establish" }
+  ],
+  "why_this_subject": "Phase T3 multi-pass system story: propagate-reshape is a conditional/parallel-branch participant in the regbase pipeline story. It decides tensor shapes (which dims are materialized vs unit) before FlattenOps and vectorization, its option gates (forRegbased/forHIVM/skipScope) encode the A3-vs-A5 (membase-vs-regbase) split, and two of its five regbase-story placements run only when the target is NOT reg-based — exactly the kind of placement condition the system story must record honestly.",
+  "provenance": {
+    "repository": "AscendNPU-IR",
+    "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+    "branch": "master",
+    "head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "analyzed_at": "2026-09-09T03:28:49+08:00",
+    "tool_versions": { "driver": "compiler-explain-driver v1.1", "git": "git rev-parse/git show/git log against the analyzed checkout" },
+    "runtime_verification": "none",
+    "source_files": [
+      { "path": "bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td", "sha256": "e09c2a9b016da9d3ce53ba2057734b73161c9e315724fa10cec60b25a978b7c4" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp", "sha256": "0f21161de8f53ed07a398e86d495ec1b3579b4b555fe82ce99d84c931fbccb1f" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/SwapCollapseExpand.cpp", "sha256": "5259b253c442c6a03fc100b3b067197f825f567fde995a926889874d2bbaeeaa" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateExpandUp.cpp", "sha256": "668c90c5e2f6da140c669c71aec731724846483be13e2b834c784ab006e17476" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp", "sha256": "fc9767463ca3bdc6b9dc4239efff7a74aa3e2481950dfa3c43b48abcd2eb636b" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateNearEndExpandDown.cpp", "sha256": "1549682655dda9bc13763c6e1b3b5f45b2e38b2aa13545e83c2828580d7befd9" },
+      { "path": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/Utils.cpp", "sha256": "37e39bb0abec6691a4a7a56c56c35bf6fed794967d302c5ab46d87e4d88f71ca" },
+      { "path": "bishengir/lib/Dialect/Utils/Util.cpp", "sha256": "45c15594f6d2d12622fca0b2fa5280f8f936b72715f783bbae0619de9ca9817d" },
+      { "path": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "sha256": "ec6bd83d3fd04217369e63c1235d671566dc99254c7845e1132811e7d9d6b524" },
+      { "path": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "sha256": "08aac62a64b5b5ae35527d05873e807d0c03a45f5cb49ca132d09dbe981d60f4" },
+      { "path": "bishengir/lib/Dialect/HFusion/Pipelines/HFusionPipelines.cpp", "sha256": "6553919d507c1ab62d6318265608ef7fd7083309c319979176eb31445115cfdf" },
+      { "path": "bishengir/lib/Dialect/HIVM/Pipelines/HIVMPipelines.cpp", "sha256": "8d48ec153fa13e1d744c276cb62d934a13ac84e96864e441893e22e70976d44f" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/FlattenOps.cpp", "sha256": "f24fad6b4e449a9c88d2494299f83c95a872ec2888a2d8b5b6c1a7822dd5ec85" },
+      { "path": "bishengir/lib/Tools/bishengir-compile/regbase/PassPipeline.cpp", "sha256": "e957ed132b9c12e21f2aa9443307e642f9810219b92ed5caceb993fa34ce625d" },
+      { "path": "bishengir/test/Dialect/Tensor/propagate-reshape-a5-regbase.mlir", "sha256": "72dd679cef28a02d0395e49c7596303f67cb10b376ee76af9b639b91c245048e" },
+      { "path": "bishengir/test/Dialect/Tensor/propagate-reshape-regbased-unit-dim.mlir", "sha256": "55cc86c86470bb313f634a1e685c97aa6093eee153bedfc1eee6022c3a196ff6" },
+      { "path": "bishengir/test/Dialect/Tensor/propagate-reshape-propagatable-ops.mlir", "sha256": "b99c3c506464b016f3a192fd8ca5f518a48d2b4eecdf0bfeeb2c298c0932b32e" }
+    ]
+  },
+  "notes": "All facts read from the working tree at HEAD 90037fe3371cb88d50c42cd4e165075cbafe83b1 (branch master). No compiler was run; runtime_verification is none and no runtime facts are claimed. The stale generated Passes.h.inc under build_hivmc (3-field options struct) was NOT used as evidence; the Passes.td tablegen source (4 options incl. max-unit-dims-for-propagation) is authoritative at this HEAD."
+}

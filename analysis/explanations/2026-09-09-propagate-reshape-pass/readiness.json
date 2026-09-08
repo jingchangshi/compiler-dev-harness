@@ -1,0 +1,162 @@
+{
+  "artifact": "readiness_report",
+  "schema_version": 1,
+  "subject_id": "propagate-reshape-pass",
+  "depth": "standard",
+  "mechanical": {
+    "checks": [
+      {
+        "name": "schema_valid",
+        "status": "pass",
+        "detail": "subject/evidence/dossier/handoff shapes valid"
+      },
+      {
+        "name": "identity",
+        "status": "pass",
+        "detail": "subject pass:PropagateReshape"
+      },
+      {
+        "name": "purpose_explained",
+        "status": "pass",
+        "detail": "need/purpose present"
+      },
+      {
+        "name": "mental_model",
+        "status": "pass",
+        "detail": "2 sentence(s), identifier density 3%"
+      },
+      {
+        "name": "system_context",
+        "status": "pass",
+        "detail": "4 upstream/trigger, 3 downstream entries"
+      },
+      {
+        "name": "inputs_outputs",
+        "status": "pass",
+        "detail": "inputs/outputs/contracts present"
+      },
+      {
+        "name": "mechanism",
+        "status": "pass",
+        "detail": "7 source-derived stages"
+      },
+      {
+        "name": "canonical_example",
+        "status": "pass",
+        "detail": "example from test"
+      },
+      {
+        "name": "state_transitions",
+        "status": "not_applicable",
+        "detail": "subject declares no significant mutable state — no fabricated transitions required"
+      },
+      {
+        "name": "decisions",
+        "status": "pass",
+        "detail": "6 decisions"
+      },
+      {
+        "name": "constraints",
+        "status": "pass",
+        "detail": "5 constraints, 3 invariants"
+      },
+      {
+        "name": "boundaries",
+        "status": "pass",
+        "detail": "5 boundary entries"
+      },
+      {
+        "name": "key_takeaways",
+        "status": "pass",
+        "detail": "5 takeaways"
+      },
+      {
+        "name": "fact_evidence",
+        "status": "pass",
+        "detail": "19 fact-class evidence records"
+      },
+      {
+        "name": "claims_trace_to_evidence",
+        "status": "pass",
+        "detail": "all explanation primitives cite ledger evidence"
+      },
+      {
+        "name": "extension_pass",
+        "status": "pass",
+        "detail": "pipeline placement + IR contract + legality/rewrite present"
+      }
+    ],
+    "verdict": "pass",
+    "failures": []
+  },
+  "semantic_review": {
+    "verdict": "ready",
+    "audience_questions": [
+      {
+        "question": "它是什么？",
+        "sufficient": true,
+        "answer": "一个 func::FuncOp 级的 MLIR 变换 pass（--propagate-reshape）：用贪心重写把 tensor/memref collapse_shape 向函数末尾、expand_shape 向生产者方向搬移，使 elementwise 等算子在与其语义匹配的秩上运算；reshape 本身不产生数据搬移，只移动形状边界。"
+      },
+      {
+        "question": "为什么存在？",
+        "sufficient": true,
+        "answer": "转换与规范化后的 IR 里不同秩的算子由 reshape 连接（HIVM 转换还会因 brc/reduce 同秩约束主动插入 reshape），下游的 Tidy/registerBased Flattener、bufferization 和向量化需要先把 reshape 噪声整理成稳定的边界布局，否则 flattener 会因 unpropagateable case 直接放弃。"
+      },
+      {
+        "question": "它处在什么上下文？",
+        "sufficient": true,
+        "answer": "上游是 canonicalization/ComposeMultiReduce/symbol 传播（preFlattenPass 内紧邻其前）和 HFusionToHIVM 等插入 reshape 的转换；下游是 FoldTensorEmpty+CanonicalizeTensorReshape+canonicalization 之后的 FlattenOps(Tidy, registerBased)、pre-bufferization 优化序列和 hfusionAutoVectorizePipeline。"
+      },
+      {
+        "question": "输入和输出是什么？",
+        "sufficient": true,
+        "answer": "输入：一个含 tensor/memref reshape 及其生产/消费算子的函数体 + 4 个选项（forHIVM/forRegbased/skipScope/maxUnitDimsForPropagation，默认 false/false/true/10）。输出：同一函数，reshape 被搬到新位置、原 reshape 被 replaceAllUsesWith 为新 collapse/expand 对；无匹配时原样返回；贪心驱动失败则 signalPassFailure。"
+      },
+      {
+        "question": "核心机制是什么？",
+        "sufficient": true,
+        "answer": "dossier.mechanism 七个源派生阶段：函数级跳过闸门 → 选项相关的 pattern 组装（forRegbased 时不注册 NearEndExpandDown 与 memref swap）→ 一次 applyPatternsGreedily → collapse-down / expand-up 两个按 ~20 种算子分派的方向模式 → collapse/expand 交换（固定+宽松 reassociation 兼容）→ 非 regbase 的 near-end expand-down。"
+      },
+      {
+        "question": "哪些状态最重要？",
+        "sufficient": true,
+        "answer": "pass 本身无可变状态（mechanism.mutable_state=false，dossier 有明示）：唯一持续存在的状态是构造时固定的 PropagateReshapeOptions，它决定 pattern 成员、跨 region 策略与阈值；贪心驱动在函数内的收敛过程不产生跨函数状态。"
+      },
+      {
+        "question": "哪些决策决定行为？",
+        "sufficient": true,
+        "answer": "6 个 decisions（D1-D6）：AIC/scope 函数级跳过；forRegbased 决定 pattern 集；模式决定分派表（flip/extract 仅 regbase、slice 仅非 forHIVM、fill 在 regbase 拒绝）；跨 region 仅 regbase+单用户；单元维阈值（>10 个 1 维即拒绝）；以及 8 个流水线放置点各用哪个选项形态。"
+      },
+      {
+        "question": "与哪些组件交互？",
+        "sufficient": true,
+        "answer": "由 buildHFusionPipelines/buildHFusionRegBasePipeline/buildConvertToHIVMPipeline/buildHIVMTensorOptimizations（regbase 与 membase 两套）插入；与 FlattenOps（紧随其后的消费者）、isRegBasedArch（放置谓词）、共享的 isStopPropagatable/isOutOp 工具、memref 伴随 pattern 交互；dossier system_context 双侧均有条目。"
+      },
+      {
+        "question": "什么情况下不能工作或选择另一条路径？",
+        "sufficient": true,
+        "answer": "AIC 函数与（regbase 模式下）含 scope.scope 的函数整体跳过；常量/init 根的 reshape 不动；flip 轴跨 reassociation 组在所有模式下拒绝（会改元素序）；单元维超阈值拒绝；regbase 下 expand-up 跨 linalg.fill 被明确拒绝（文档记载的不收敛风险）；argmin/argmax 第二结果阻塞 reduce 传播；非 regbased 目标不走 forRegbased 放置、regbased 目标不走两个 HIVM 放置（边界条件在 dossier 中逐条归类）。"
+      },
+      {
+        "question": "最值得记住的 3～5 点是什么？",
+        "sufficient": true,
+        "answer": "即 dossier.key_takeaways 五条：它搬的是 reshape 不是数据；两个模式开关改变 pattern 集与区域策略而非只调参数；regbase 故事是条件的（regbased 目标在 FlattenOps 前、非 regbased 目标才走 HIVM 两个放置点）；合法性核心是元素序与终止性（fill 拒绝与 unit-dim FIXME 是真实教训）；它的价值由下游 FlattenOps/bufferization/向量化收到的形状组织度衡量。"
+      },
+      {
+        "question": "Pass 在 pipeline 的哪个位置，前后的 IR 形态是什么？",
+        "sufficient": true,
+        "answer": "extensions.pass.pipeline_placements 逐条给出 8 个真实放置点（含 file:line 与 gate）：regbase 目标+enableFlatten 时在 FlattenOps(Tidy,registerBased) 之前（528-533 / 570-575）；preFlattenPass 默认选项（226 / membase 145）；非 regbased 目标时在 ConvertToHIVM 之后（675-682，!enableRegBaseHIVMPipe）与 pre-bufferization 管线头部（322-330，!isRegBasedArch）。ir_contract 给出 before/after 形态：mulext 从 collapse 后低秩运算变为高秩运算+结果 collapse；regbase flip 迁移到扩展秩并保留低秩用户。"
+      },
+      {
+        "question": "合法性条件是什么，什么情况下拒绝改写？",
+        "sufficient": true,
+        "answer": "extensions.pass.legality 七条：源必须有非 stop-propagatable 定义；reassociation 兼容（固定+宽松）；flip 轴不跨组；跨 region 仅 regbase 单用户；单元维预算；fixpoint 保护（fill 拒绝、argmin/argmax 守卫、非纯 tensor DPS 跳过、VTransposeOp TODO 跳过）；驱动失败则 signalPassFailure 而非输出中间态。"
+      }
+    ],
+    "notes": "Honest review: all 12 questions are answerable from the bundle alone. No compiler was executed — behavioral expectations are cited from checked-in FileCheck tests read at HEAD 90037fe3 (runtime_verification: none, stated in subject.provenance and canonical_example.provenance). One boundary is recorded as unknown (no func.call/return-boundary propagation handler found in the dispatch; not determined whether it exists elsewhere). The stale generated Passes.h.inc under build_hivmc (3-field options) was deliberately not used; Passes.td (4 options) is authoritative."
+  },
+  "verdict": "ready",
+  "reasons": [],
+  "driver": "compiler-explain-driver v1.1",
+  "evaluated_at": "2026-09-08T20:48:44.928Z"
+}

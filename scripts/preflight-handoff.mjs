@@ -26,7 +26,7 @@ import { join, resolve } from 'node:path'
 import {
   validateBundle, computeReadiness, computeStaleness, SCHEMA_VERSION,
 } from './teaching-schema.mjs'
-import { loadBundle, stalenessForBundle } from '../compiler-explain-driver.mjs'
+import { loadBundle, stalenessForBundle, resolveCompositionImports } from '../compiler-explain-driver.mjs'
 
 function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -85,7 +85,23 @@ export function preflightHandoff(bundleDir, { subjectId, repoRoot } = {}) {
     }
   }
 
-  const { errors } = validateBundle(bundle)
+  // Composition inputs (Phase T3): when the bundle declares child-bundle
+  // imports (composition.json), resolve them so namespaced evidence
+  // references validate — this is bundle-level provenance handling, not
+  // system-story special-casing. Recursive freshness is already covered: the
+  // staleness check below calls the same driver entrypoint that aggregates
+  // child-bundle staleness and import hash drift.
+  let imports = []
+  if (bundle.composition !== undefined) {
+    const resolved = resolveCompositionImports(dir)
+    if (!resolved.ok) {
+      reasons.push(`composition imports unresolvable: ${resolved.errors.slice(0, 4).join('; ')}`)
+    } else {
+      imports = resolved.imports
+    }
+  }
+
+  const { errors } = validateBundle(bundle, { imports })
   if (errors.length > 0) reasons.push(`schema invalid: ${errors.slice(0, 8).join('; ')}`)
 
   // Subject id match (when the consumer declares which subject it is presenting).
@@ -104,10 +120,14 @@ export function preflightHandoff(bundleDir, { subjectId, repoRoot } = {}) {
     const stale = stalenessForBundle(dir, root)
     if (!stale.ok) reasons.push(`staleness unknown: ${stale.error}`)
     else if (stale.staleness.stale) {
+      const compositionReasons = stale.staleness.composition?.stale
+        ? stale.staleness.composition.reasons
+        : []
       return {
         verdict: 'STALE_PRESENTATION_INPUT',
         reasons: [
           `analyzed source changed since analysis (head_at_analysis=${stale.staleness.head_at_analysis}, head_now=${stale.staleness.head_now}, changed_files=${stale.staleness.stale_files.join(', ') || 'none'})`,
+          ...compositionReasons,
           'refresh the explanation bundle first — never edit the recorded handoff SHAs to bypass this gate',
         ],
         dir,
@@ -120,8 +140,8 @@ export function preflightHandoff(bundleDir, { subjectId, repoRoot } = {}) {
   // stale verdict field).
   const readiness = computeReadiness({
     subject: bundle.subject, evidence: bundle.evidence, dossier: bundle.dossier,
-    handoff: bundle.handoff, readiness: bundle.readiness,
-  }, { depth: bundle.dossier?.depth })
+    handoff: bundle.handoff, readiness: bundle.readiness, composition: bundle.composition,
+  }, { depth: bundle.dossier?.depth, imports })
   if (readiness.verdict !== 'ready') reasons.push(...readiness.reasons)
 
   // Handoff presence is a handoff-first precondition.

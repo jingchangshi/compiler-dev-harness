@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1329 258" width="100%" height="100%">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>
+<rect x="0" y="0" width="387" height="72" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="193.5" y="42.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">L1: bufferize 前,tensor 级,mergeLevel=1</text>
+<rect x="477" y="0" width="387" height="72" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="670.5" y="42.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">L2: bufferize 后,memref 级,mergeLevel=2</text>
+<rect x="954" y="0" width="351" height="72" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="1129.5" y="42.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">收益:bufferization 看到更小的调用图</text>
+<rect x="0" y="162" width="387" height="72" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="193.5" y="204.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">收益:用具体 memref alias 信息做合并决策</text>
+<line x1="387" y1="36.0" x2="954" y2="36.0" stroke="#343a40" stroke-width="2.5" marker-end="url(#arrow)"/>
+<line x1="477" y1="36.0" x2="387" y2="198.0" stroke="#343a40" stroke-width="2.5" marker-end="url(#arrow)"/>
+</svg>

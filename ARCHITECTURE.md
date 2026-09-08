@@ -1011,6 +1011,77 @@ Deck 侧轻量 manifest(**不是**第五层知识层):input(bundle_id/subject_id
 
 ---
 
+## 19. Phase T3:System Story Composition(2026-09-08 已实现)
+
+目标:把多个已通过 Code Explanation workflow 分析清楚的 READY child bundle 组合成一条系统级技术故事——回答"这些组件为什么共同存在、为什么按这个顺序协作、跨组件 contract 是什么、表示形态在哪里转换"——并让结果作为**普通** PresentationHandoff 进入既有 presentation consumer。**不新增第五层知识模型,不建第二套 explanation framework,不 bump Teaching Artifact Protocol 的 schema version。**
+
+### 19.1 分层与复用边界
+
+```text
+READY+FRESH child bundles (subject/evidence/dossier/handoff/readiness)
+        │  semantic source:消费其 recorded knowledge(mental model/contracts/
+        │  mechanism summary/takeaways/boundaries/handoff storyline/evidence index)
+        │  禁止:重读 child 内部实现、重推 child 算法、重选 child example
+        ▼
+composition.json(轻量 provenance,不是知识层)
+        ├─ requested_components + components[](每个 requested 组件一个显式 disposition:
+        │   core/supporting/context/appendix/excluded;excluded/appendix 必须有 reason——
+        │   禁止静默消失)
+        ├─ context_nodes[](context-only 阶段:无需 dossier,只需足够的 cross evidence)
+        ├─ bridges[](from/to/relation/flow_type(data_flow|control_flow)/contract/
+        │   why_order_matters/representation_before|after/evidence_refs/epistemic_status/
+        │   confidence/unresolved)——relation 是自由文本,禁止 compiler-only enum
+        ├─ representation_boundaries[](一等概念:boundary 两侧的表示形态)
+        ├─ imports[](alias → child bundle + child subject_id + evidence.json sha256)
+        └─ conflicts[](open conflict 阻塞 readiness,禁止叙事绕过)
+        ▼
+普通 TeachingDossier(subject_type = workflow/component_group/subsystem/pipeline)
+        + 普通 PresentationHandoff → 同一个 T2 preflight → 同一个 presentation consumer
+```
+
+Semantic zoom 是硬要求:系统故事只放横向连接(ordering/contract/representation transition),组件内部机制留在 child dossier("tryMerge 的 12 步"属于 child;"MergeVecScope 在 outlining 之后重新合并 VF"属于 system)。
+
+### 19.2 Cross-bundle evidence:namespaced imports(无复制)
+
+- Parent ledger 只存**新的跨组件事实**(pipeline order、producer→consumer、shared state)。引用 child 事实时,在 evidence_refs/bridges 中写 `alias::EV-ID`(**不做** child ledger 复制)。
+- `composition.json.imports` 声明 `alias → child bundle + subject_id + evidence.json sha256(+head)`;driver 解析后构建 evidence id space(parent ledger ∪ imports),namespaced ref 的 class 永远继承 child 原始记录——**imported reasoning 永不升格为 fact**。
+- 解析失败(child 缺失/ref 不存在/hash mismatch)→ compose-validate fail / readiness not_ready / preflight 拒绝。这是"minimal backward-compatible evidence import":schema_version 保持 1,单 subject workflow 与全部 v1 bundle 不受影响(未知字段本就容忍,ref 解析器向后兼容)。**Protocol v2 无需 bump。**
+
+### 19.3 确定性半区(compose 命令族,挂在 `compiler_explain` 下)
+
+- `compose-preflight <bundle_dirs>`:任何系统级推理**之前**的确定性门——child 存在、schema 支持、READY、FRESH、subject id 唯一、同 repository、同 current HEAD(v0:同仓库同 revision;不同 HEAD 要求 refresh,绝不自动忽略)。
+- `compose-plan`:scaffold composition.json 骨架 + disposition/bridge/imports 模型 + 复用规则。
+- `compose-validate`:composition.json shape + imports 解析与 hash 校验 + coverage/bridges/conflicts 交叉检查 + 递归 staleness + 机械 readiness floor。
+- `compose-render`:从 JSON artifacts 确定性渲染 `system-story.md`(**derived view**;JSON 是唯一事实源)。
+- `readiness`/`stale` 对 composition bundle 自动生效:readiness 在既有机械门之上追加 composition 交叉检查;staleness **递归**——system bundle、任一 child bundle、child HEAD 漂移、任一 import hash 漂移,任何一项过期即系统故事过期(单一 staleness 入口,T2 preflight 免改即获得递归)。
+- 机械 readiness floor(仅 composition bundle):requested coverage 双向集合相等、bridge 端点可解析、每个 bridge ≥1 可解析 evidence(`fact` 状态必须 ≥1 fact-class ref)、无 open conflict、≥1 representation boundary、mechanism.stages ≥2(端到端流骨架)、child 输入声明齐全。
+- 增量刷新(§17):compose-preflight 按 child 报告 verdict,只刷新 stale/缺失 child,然后 re-compose;不重分析 fresh children。
+
+### 19.4 防过拟合
+
+- composition-schema.mjs / compiler-compose-driver.mjs 无任何具体 pass/领域概念(relation 词表只是提示,不是 enum);异构回归(heterogeneous fixture:class+function children → component_group system bundle)证明 composition engine 与 compiler 概念零耦合。
+- 新文件已纳入 teaching-dogfood generic-layer 扫描名单。
+
+### 19.5 文件清单(Phase T3 增改)
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/composition-schema.mjs` | 纯模块:composition.json validator、composition 机械交叉检查、evidence id space(`alias::EV-ID`)、递归 staleness 聚合(无 I/O) |
+| `compiler-compose-driver.mjs` | compose plan/preflight/validate/render(I/O 半区;消费 explain-driver 的 bundle IO) |
+| `scripts/teaching-schema.mjs` | evidence id space 接线 + `validateBundle/computeMechanicalReadiness` 接受 imports + composition 交叉检查挂接(行为向后兼容) |
+| `compiler-explain-driver.mjs` | loadBundle 增 composition.json;resolveCompositionImports;stalenessForBundle 递归;readiness/validate 感知 composition |
+| `scripts/preflight-handoff.mjs` | composition.json 存在时解析 imports(bundle 级 provenance 处理,非 system-story 特判);STALE 理由透传 composition reasons |
+| `compiler-explain-v2.cjs` | v2.1:compose 四命令 + policy 段落 |
+| `scripts/test/composition.test.mjs` | 27 项:preflight 七拒绝、imports 五纪律、integrity 五项、system readiness 四拒绝一通过、presentation 回归(CONSUMABLE+递归 STALE)、异构、反过拟合、renderer |
+| `analysis/explanations/2026-09-09-regbase-vector-pipeline-pipeline/` | 真实 dogfood:6 requested passes 的 system story(child 复用 + 4 个 pass-by-pass runtime facts) |
+| `analysis/2026-09-09-phase-t3-system-story.md` | Phase 报告 |
+
+### 19.6 Dogfood 结论(详见 analysis/2026-09-09-phase-t3-system-story.md)
+
+见 Phase 报告:6 个 requested subjects(5 新建 + 1 复用)、evidence-backed bridges、representation boundaries(tensor→memref、scalar→VF、unmarked→aligned)、stitched end-to-end example(显式标注非单一执行)、T2 preflight CONSUMABLE、checker 通过、独立受众复核与 whole>sum review。
+
+---
+
 ### 附录:事实来源
 
 - Preset:`preset.yml`、`agent.cordis.yml`、`compiler-inspect-v3-6.cjs`、`compiler-inspect-driver.mjs`(v1.5)、

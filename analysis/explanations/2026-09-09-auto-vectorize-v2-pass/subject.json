@@ -1,0 +1,67 @@
+{
+  "artifact": "subject",
+  "schema_version": 1,
+  "subject_id": "auto-vectorize-v2-pass",
+  "subject_type": "pass",
+  "name": "AutoVectorizeV2",
+  "repository": "AscendNPU-IR",
+  "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+  "source_locations": [
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorizeV2.cpp", "lines": "1-1672" },
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/PlanContext.cpp", "lines": "1-574" },
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/FusedNode.cpp", "lines": "1-431" },
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/FusionUtils.cpp", "lines": "1-246" },
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/Verify.cpp", "lines": "1-121" },
+    { "file": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td", "lines": "155-176" },
+    { "file": "bishengir/lib/Dialect/HFusion/Transforms/OutlineVectorFunction.cpp", "lines": "1-218" },
+    { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "389-489" },
+    { "file": "bishengir/test/Dialect/HFusion/auto-vectorize-v2.mlir" },
+    { "file": "bishengir/test/Dialect/HFusion/auto-vectorize-v2-cross-group-conflict.mlir" }
+  ],
+  "scope": "The hfusion-auto-vectorize-v2 pass and its AutoVectorize/ planning helpers (PlanContext, FusedNode, FusionUtils, Verify): candidate classification, group formation, conflict model, tile-size policy, transform-sequence emission, and the clone-attempt discipline. Includes the immediately-following OutlineVectorFunctionPass because it materializes the VF functions this pass labels, and the regbase pipeline placement. Excludes the cost-model internals of TreeReduceV2, the HFusionToVector conversion, and MergeVecScope's merge mechanics.",
+  "related_entities": [
+    { "name": "VFFusionPass (analysis::createVFFusionPass)", "relation": "upstream on the Triton-kernel path: outlines work into private _fused_ functions and freezes tree-reduce selection attrs that AutoVectorizeV2 consumes and finally strips" },
+    { "name": "OutlineVectorFunctionPass (outline-vector-function)", "relation": "runs immediately after; outlines the loops AutoVectorizeV2 labeled outlined-loop-target-* into hivm.vector_function callees" },
+    { "name": "MergeVecScope (hfusion-merge-vf)", "relation": "downstream consumer in the HIVM regbase bufferization pipeline; merges the VF functions/scopes produced by outlining" },
+    { "name": "AutoVectorize (hfusion-auto-vectorize, V1)", "relation": "legacy alternative branch of the same pipeline stage, selected when enableAutoVectorizeV2 is false" },
+    { "name": "AutoVectorizeVerifier (hfusion-auto-vectorize-verifier)", "relation": "separate pass after both branches; also used in-function by AutoVectorizeV2 via hfusion::AutoVectorizeVerifier" },
+    { "name": "TreeReduceV2 (tree-reduce-v2)", "relation": "conditional follow-up that rewrites loops AutoVectorizeV2 marked kRegisterTreeReductionLoopAttr" },
+    { "name": "PlanContext / FusedNode / VFStackInfoBuilder", "relation": "owned planning data structures for grouping, conflicts, and stack-slot budget" }
+  ],
+  "why_this_subject": "Phase T3 dogfood of the multi-pass system story: AutoVectorizeV2 is the pass that turns scalar/tensor-level linalg groups into outlined vector functions, so it is the producer side of the MergeVecScope consumer already analyzed (2026-09-08-mergevecscope-pass). It is a large transform pass (1672-line entry file plus a planning directory) whose VF labels and hivm.vector_function callees are cross-component contracts, and its behavior only makes sense as a pipeline position (VFFusion before, outlining/merging/bufferization after).",
+  "provenance": {
+    "repository": "AscendNPU-IR",
+    "repository_path": "/home/shijingchang/workspace/AscendNPU-IR",
+    "branch": "master",
+    "head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "analyzed_at": "2026-09-08T19:51:11Z",
+    "tool_versions": {
+      "driver": "compiler-explain-driver v1.1"
+    },
+    "runtime_verification": "none",
+    "source_files": [
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td", "sha256": "4ae45e0518ab094f2d6fd22bb10db11eb7aeb90a9d31e23703d3511c02796f91" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorizeV2.cpp", "sha256": "6d837f950d3ea4076142cde5e8f88ff7274b03fe78409616d8efb65a18af155d" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/PlanContext.cpp", "sha256": "fa140e16ccb347afbe1a838e96b8dfd579fc9f8aba7ae81540ded34323aff8d6" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/AutoVectorize/PlanContext.h", "sha256": "2fd1e149aa9480c574d9237b0717fda50bf3fdf739e4d4abb3ee6145322b7d9e" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/FusedNode.cpp", "sha256": "df75d612d321bd2c9a78b2d4f7eb392d812548f1feb917401ad43cdbef26b0ae" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/AutoVectorize/FusedNode.h", "sha256": "02a900ebc0b7fe4312ff49ec8005a52753edf7035718f13cd18f1719b10db856" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/FusionUtils.cpp", "sha256": "2f6af482644375c51087773f838161a1adb37857e774eed22ae90bfa5859c4a7" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/AutoVectorize/RetriedOptions.h", "sha256": "19db669ef03a42415234e99246d24f86859b892d26a4f9d89f3cbd8d80aaf93d" },
+      { "path": "bishengir/include/bishengir/Dialect/HFusion/Transforms/AutoVectorize/Attrs.h", "sha256": "23a62aaec2896614ab11fe81f55db232ba261f7f80feb9053123b9bc68dbdc58" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/Verify.cpp", "sha256": "cd787cae37d4738b74eeb7f82931ac34c60a4eab0646ac134753ece43df164f8" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/AutoVectorize/AutoVectorizeInterpreter.cpp", "sha256": "5892ac955faf505d23f39851f556e92bf18097944299411ad1767c65096bf902" },
+      { "path": "bishengir/lib/Dialect/HFusion/Transforms/OutlineVectorFunction.cpp", "sha256": "54c7dc064bd3110ea195d87ffc708d8498503f08480244b77bbd93877bb32e23" },
+      { "path": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "sha256": "ec6bd83d3fd04217369e63c1235d671566dc99254c7845e1132811e7d9d6b524" },
+      { "path": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "sha256": "08aac62a64b5b5ae35527d05873e807d0c03a45f5cb49ca132d09dbe981d60f4" },
+      { "path": "bishengir/lib/Dialect/Analysis/VFFusion/VFFusionPass.cpp", "sha256": "da5253b13cb9ce482ca8a5255e9705dd9f38e31edf1f021f757e56364a7fdd93" },
+      { "path": "bishengir/lib/Dialect/Analysis/VFFusion/VFStackInfo.cpp", "sha256": "652957ad089d1a1b706a56c90e947829501fd7e47bbc33630bda1f61c7618e72" },
+      { "path": "bishengir/lib/Dialect/HIVM/Utils/RegbaseUtils.cpp", "sha256": "ce895b5c566bf7db9b3b72f32fa66bebfc44e58fe59f7c2c4eeed0d7589fac90" },
+      { "path": "bishengir/include/bishengir/Dialect/HIVM/IR/HIVMAttrs.td", "sha256": "ebe3d05af81c7602ef189f738736e6f19b3eedee589fcbc7bcd05864654904da" },
+      { "path": "bishengir/test/Dialect/HFusion/auto-vectorize-v2.mlir", "sha256": "4dd75fd2c92a0067b083e5a1644e16f56c6589cfbf4e5a3f04abbefdd3eef120" },
+      { "path": "bishengir/test/Dialect/HFusion/auto-vectorize-v2-cross-group-conflict.mlir", "sha256": "54d4ccaff81f9f5371cbcb89cd414a5aad3ed71077e307b39327368059e7123b" },
+      { "path": "bishengir/test/Dialect/HFusion/AutoVectorize/auto-vectorize-v2-fallback-to-v1.mlir", "sha256": "5a6ed02cd5e51a85a4ea743f043a2805fa8d03e6d3ec2fb8459a38650cc0a91b" },
+      { "path": "bishengir/test/Dialect/HFusion/outline-vector-function.mlir", "sha256": "25445615491f5e0263f4db8640d9344dbfd1fe9aaa36c18055df99cbbe48cee4" }
+    ]
+  }
+}

@@ -29,9 +29,10 @@ import {
   validateBundle, computeMechanicalReadiness, computeReadiness, computeStaleness,
   slugify, assessMentalModel,
 } from './scripts/teaching-schema.mjs'
+import { computeCompositionStaleness, validateComposition } from './scripts/composition-schema.mjs'
 
-const DRIVER_VERSION = 'compiler-explain-driver v1.0'
-const ARTIFACT_FILES = ['subject.json', 'evidence.json', 'dossier.json', 'handoff.json', 'readiness.json']
+const DRIVER_VERSION = 'compiler-explain-driver v1.1'
+const ARTIFACT_FILES = ['subject.json', 'evidence.json', 'dossier.json', 'handoff.json', 'readiness.json', 'composition.json']
 
 /** Bundle root: preset analysis/explanations/ unless overridden (tests). */
 export function explainRoot() {
@@ -202,7 +203,17 @@ export function loadBundle(bundleDir) {
 export function validateBundleDir(bundleDir) {
   const load = loadBundle(bundleDir)
   if (!load.ok) return { ok: false, error: load.error }
-  const { errors } = validateBundle(load.bundle)
+  // Composition bundles: resolve declared child imports first so namespaced
+  // evidence references (`alias::EV-ID`) validate against the child ledgers.
+  let imports = []
+  const importErrors = []
+  if (load.bundle.composition) {
+    const resolved = resolveCompositionImports(load.dir)
+    if (resolved.ok) imports = resolved.imports
+    else importErrors.push(...resolved.errors)
+  }
+  const { errors } = validateBundle(load.bundle, { imports })
+  errors.push(...importErrors)
   const warnings = []
   const dossier = load.bundle.dossier
   if (dossier) {
@@ -211,6 +222,13 @@ export function validateBundleDir(bundleDir) {
     if (dossier.depth === 'presentation' && load.bundle.handoff === undefined) warnings.push('presentation depth without a presentation handoff')
   }
   if (load.bundle.handoff !== undefined && dossier === undefined) warnings.push('handoff without a dossier — the handoff must be derived from a teaching dossier')
+  if (load.bundle.composition) {
+    // Shape-only pass/fail summary for the composition artifact (cross-checks
+    // like coverage/bridges/conflicts are readiness-level, not validate-level).
+    const compErrors = []
+    validateComposition(load.bundle.composition, compErrors, 'composition')
+    if (compErrors.length === 0) warnings.push('composition artifact shape valid — run compose-validate for import resolution and cross-bundle checks')
+  }
   return {
     ok: true, dir: load.dir, loaded: load.loaded, valid: errors.length === 0,
     errors: errors.slice(0, 50), warnings,
@@ -223,7 +241,17 @@ export function readinessForBundle(bundleDir, semanticReview, { depth } = {}) {
   const bundle = load.bundle
   if (semanticReview !== undefined) bundle.readiness = { ...(bundle.readiness || {}), artifact: 'readiness_report', schema_version: 1, subject_id: bundle.subject?.subject_id || bundle.dossier?.subject_id, semantic_review: semanticReview }
   const depthOpt = depth || bundle.dossier?.depth || bundle.subject?.depth
-  const result = computeReadiness({ subject: bundle.subject, evidence: bundle.evidence, dossier: bundle.dossier, handoff: bundle.handoff, readiness: bundle.readiness }, { depth: depthOpt })
+  // Composition bundles: resolve child imports so namespaced evidence refs
+  // participate in readiness; unresolved imports are hard readiness reasons.
+  let imports = []
+  const importErrors = []
+  if (bundle.composition) {
+    const resolved = resolveCompositionImports(load.dir)
+    if (resolved.ok) imports = resolved.imports
+    else importErrors.push(...resolved.errors)
+  }
+  const result = computeReadiness({ subject: bundle.subject, evidence: bundle.evidence, dossier: bundle.dossier, handoff: bundle.handoff, readiness: bundle.readiness, composition: bundle.composition }, { depth: depthOpt, imports })
+  const reasons = [...result.reasons, ...importErrors]
   const report = {
     artifact: 'readiness_report',
     schema_version: 1,
@@ -231,12 +259,12 @@ export function readinessForBundle(bundleDir, semanticReview, { depth } = {}) {
     depth: depthOpt || 'standard',
     mechanical: result.mechanical,
     semantic_review: bundle.readiness?.semantic_review,
-    verdict: result.verdict,
-    reasons: result.reasons,
+    verdict: importErrors.length > 0 ? 'not_ready' : result.verdict,
+    reasons,
     driver: DRIVER_VERSION,
     evaluated_at: new Date().toISOString(),
   }
-  return { ok: true, dir: load.dir, report, result }
+  return { ok: true, dir: load.dir, report, result: { ...result, reasons } }
 }
 
 /** Persist readiness.json into the bundle dir (the only command that writes). */
@@ -247,6 +275,64 @@ export function saveReadiness(bundleDir, semanticReview, options = {}) {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(out.report, null, 2)}\n`)
   return { ...out, saved: path }
+}
+
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+/** Resolve a child bundle directory name recorded in composition.json: bundle
+ * dirs are siblings of the composition bundle by default; a name containing a
+ * path separator is resolved relative to the composition bundle's parent. */
+function childBundlePath(systemBundleDir, name) {
+  if (!isNonemptyString(name)) return undefined
+  return resolve(dirname(systemBundleDir), name)
+}
+
+function isNonemptyString(v) {
+  return typeof v === 'string' && v.trim() !== ''
+}
+
+/**
+ * Resolve the `imports` declared in a composition bundle: read each child
+ * bundle's evidence ledger, verify the recorded evidence.json hash, and build
+ * the class map the evidence id space uses to resolve `alias::EV-ID`
+ * references. Preserves the child's original fact classes — an imported
+ * reasoning record never becomes a fact in the parent.
+ */
+export function resolveCompositionImports(bundleDir) {
+  const load = loadBundle(bundleDir)
+  if (!load.ok) return { ok: false, error: load.error }
+  const composition = load.bundle.composition
+  if (!composition) return { ok: true, imports: [] }
+  const imports = []
+  const errors = []
+  for (const imp of composition.imports || []) {
+    if (!imp || typeof imp !== 'object') { errors.push('composition.imports entry must be a mapping'); continue }
+    const childPath = childBundlePath(load.dir, imp.bundle)
+    const childLoad = childPath ? loadBundle(childPath) : { ok: false, error: 'invalid bundle name' }
+    if (!childLoad.ok) {
+      errors.push(`import alias "${imp.alias}": ${childLoad.error}`)
+      continue
+    }
+    const childLedger = childLoad.bundle.evidence
+    if (!childLedger || !Array.isArray(childLedger.records)) {
+      errors.push(`import alias "${imp.alias}": child bundle ${imp.bundle} has no evidence ledger`)
+      continue
+    }
+    const evPath = join(childLoad.dir, 'evidence.json')
+    const currentHash = sha256File(evPath)
+    if (isNonemptyString(imp.evidence_sha256) && imp.evidence_sha256 !== currentHash) {
+      errors.push(`import alias "${imp.alias}": child evidence.json hash mismatch for ${imp.bundle} (recorded ${imp.evidence_sha256.slice(0, 12)}, current ${currentHash.slice(0, 12)}) — refresh the composition input`)
+      continue
+    }
+    const classes = new Map(childLedger.records
+      .filter((r) => r !== null && typeof r === 'object' && isNonemptyString(r.id))
+      .map((r) => [r.id, r.class]))
+    imports.push({ ...imp, classes, dir: childLoad.dir, current_evidence_sha256: currentHash })
+  }
+  if (errors.length > 0) return { ok: false, errors, imports }
+  return { ok: true, imports, dir: load.dir }
 }
 
 export function stalenessForBundle(bundleDir, repoRoot) {
@@ -265,6 +351,48 @@ export function stalenessForBundle(bundleDir, repoRoot) {
     }
   }
   const staleness = computeStaleness({ provenance, currentHead, currentFileHashes })
+  // Composition bundles (Phase T3): staleness recurses — the system story is
+  // stale whenever the system bundle, any child bundle, any child HEAD, or
+  // any imported child evidence hash drifts. This single entrypoint is what
+  // `compiler_explain stale` and the presentation preflight gate both use, so
+  // the consumer gains recursion without special-casing system stories.
+  if (load.bundle.composition) {
+    const composition = load.bundle.composition
+    const children = []
+    for (const c of composition.components || []) {
+      if (!c || !['core', 'supporting'].includes(c.disposition) || !isNonemptyString(c.child_bundle)) continue
+      const childPath = childBundlePath(load.dir, c.child_bundle)
+      const childLoad = loadBundle(childPath)
+      if (!childLoad.ok) {
+        children.push({ component_id: c.component_id, bundle: c.child_bundle, exists: false, error: childLoad.error })
+        continue
+      }
+      const childStale = stalenessForBundle(childLoad.dir, root)
+      const childHead = childLoad.bundle.subject?.provenance?.head
+      let evidenceHash
+      try { evidenceHash = sha256File(join(childLoad.dir, 'evidence.json')) } catch { evidenceHash = undefined }
+      children.push({
+        component_id: c.component_id, bundle: c.child_bundle, exists: true,
+        staleness: childStale.ok ? childStale.staleness : undefined,
+        head: childHead, evidence_sha256: evidenceHash,
+      })
+    }
+    const importChecks = (composition.imports || []).map((imp) => {
+      const childPath = childBundlePath(load.dir, imp.bundle)
+      const childLoad = loadBundle(childPath)
+      if (!childLoad.ok) return { alias: imp.alias, bundle: imp.bundle, exists: false, error: childLoad.error }
+      let evidenceHash
+      try { evidenceHash = sha256File(join(childLoad.dir, 'evidence.json')) } catch { evidenceHash = undefined }
+      return {
+        alias: imp.alias, bundle: imp.bundle, exists: true,
+        evidence_sha256: evidenceHash, recorded_evidence_sha256: imp.evidence_sha256,
+        head: childLoad.bundle.subject?.provenance?.head,
+      }
+    })
+    const compositionStale = computeCompositionStaleness({ composition, systemStaleness: staleness, children, imports: importChecks })
+    staleness.stale = staleness.stale || compositionStale.stale
+    staleness.composition = { stale: compositionStale.stale, reasons: compositionStale.reasons, children: compositionStale.children }
+  }
   return { ok: true, dir: load.dir, repo_root: root, staleness }
 }
 

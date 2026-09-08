@@ -1,0 +1,190 @@
+{
+  "artifact": "evidence",
+  "records": [
+    {
+      "id": "SYS-EV-001",
+      "class": "source_fact",
+      "statement": "In buildHFusionRegBasePipeline (starts :567), when options.enableFlatten, the order is: PropagateReshape (forRegbased=true) → FoldTensorEmpty → CanonicalizeTensorReshape → canonicalize → FlattenOps (FlattenMode::Tidy, registerBased=true) → canonicalize → FoldTensorEmpty. The same three-pass cleanup block (PropagateReshape → FoldTensorEmpty → CanonicalizeTensorReshape) also precedes FlattenOps inside the buildHFusionPipelines Triton branch (:528-546).",
+      "tool": "read",
+      "command": "sed -n '567,592p' bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp; sed -n '524,548p' bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp",
+          "lines": "567-592, 524-548"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-002",
+      "class": "source_fact",
+      "statement": "hfusionAutoVectorizePipeline (regbase, SIMD VF fusion enabled) runs: VFFusionPass → FlattenOps (Tidy, registerBased) → canonicalization → PreVectorizationFusion → PrepareI1Nx1ForVectorization → AutoVectorizeV2 (gated by enableAutoVectorizeV2) → OutlineVectorFunctionPass → AutoVectorizeVerifierPass; the non-AutoVectorizeV2 branch falls back to legacy AutoVectorize with maxVectorizeAxes=2.",
+      "tool": "read",
+      "command": "sed -n '395,470p' bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp",
+          "lines": "399-466"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-003",
+      "class": "source_fact",
+      "statement": "bufferizationPipeline places MergeVecScope around bufferization: enableVfMergeLevel==1 adds MergeVecScope(mergeLevel=1) BEFORE SimplifyVFArgs/FoldExtractInsertPair/NormalizeToTensor/TensorCopyInsertion/OneShotBufferize; enableVfMergeLevel==2 adds MergeVecScope(mergeLevel=2) immediately AFTER OneShotBufferize; the two placements are mutually exclusive (if/else on the same option).",
+      "tool": "read",
+      "command": "sed -n '222,277p' bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "227-270"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-004",
+      "class": "source_fact",
+      "statement": "alignStoragePipeline is: AlignAllocSizePass → (if enableHIVMAutoStorageAlign) PreMarkStrideAlignPass + MarkStrideAlignPass → FoldAllocReshapePass → EnableStrideAlignPass (unconditional tail of the pipeline).",
+      "tool": "read",
+      "command": "sed -n '485,495p' bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "485-494"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-005",
+      "class": "source_fact",
+      "statement": "hivmPostBufferizationOptimizationPipeline calls alignStoragePipeline(pm, hivmPipelineOptions) (line 560), and buildLowerHIVMPipelines calls bufferizationPipeline before hivmPostBufferizationOptimizationPipeline — so the whole align-storage block runs in the post-bufferization (memref) world.",
+      "tool": "read",
+      "command": "sed -n '514,562p;686,702p' bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "514-562, 693-700"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-006",
+      "class": "source_fact",
+      "statement": "Pass declaration: MarkStrideAlign 'For all hivm ops, annotate their memref operands with storage_align marks automatically' (func::FuncOp); EnableStrideAlign 'Re-allocate memrefs according to annotations of storage_align marks. ModuleOp scope is required so FuncOp-parallel nesting cannot race when aligned allocs propagate through func.call into VF callees.'",
+      "tool": "read",
+      "command": "sed -n '876,894p' bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td",
+      "refs": [
+        {
+          "file": "bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td",
+          "lines": "876-894"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-007",
+      "class": "source_fact",
+      "statement": "Pass declarations: AutoVectorizeV2 'Tile, fuse and vectorize all linalg named ops' (ModuleOp); MergeVecScope 'Merge vf function' with mergeLevel option documented as '0: no merge; 1: merge VFs only without dependency; 2: merge all VFs' and mergeVFNumLimit default 4; FlattenOps 'Flatten linalg and hfusion ops'; PropagateReshape 'Propagate operations through reshape operations' (moves elemwise ops through reshapes).",
+      "tool": "read",
+      "command": "sed -n '155,160p;719,733p' bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td; sed -n '223,232p' bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td; sed -n '58,70p' bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td",
+      "refs": [
+        {
+          "file": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td",
+          "lines": "155-159, 223-228, 719-733"
+        },
+        {
+          "file": "bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td",
+          "lines": "58-70"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-008",
+      "class": "source_fact",
+      "statement": "The HIVM level has its own DISTINCT flatten pass (hivm-flatten-ops on func::FuncOp, createFlattenOpsPass in HIVM/Transforms/FlattenOps.cpp) placed after SetBufferSize inside the post-bufferization optimization pipeline with DecomposePhase::AFTER_HIVM_FLATTEN_OPS — a different pass from the requested hfusion-flatten-ops.",
+      "tool": "read",
+      "command": "grep -n 'FlattenOps' bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp; sed -n '834,842p' bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "578-588"
+        },
+        {
+          "file": "bishengir/include/bishengir/Dialect/HIVM/Transforms/Passes.td",
+          "lines": "834-842"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-009",
+      "class": "source_fact",
+      "statement": "PropagateReshape's HIVM-level placements are conditional on the target: hivmPreBufferizationOptimizationPipeline runs it only when NOT isRegBasedArch(target), and buildConvertToHIVMPipeline runs it only when !enableRegBaseHIVMPipe — on the regbase A5 path these two instances do not execute; the pass participates via the HFusion-level regbase placements instead.",
+      "tool": "read",
+      "command": "sed -n '320,335p;679,684p' bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "321-332, 677-684"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-010",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt --hivm-mark-stride-align -allow-unregistered-dialect on bishengir/test/Dialect/HIVM/hivm-mark-storage-align.mlir (exit 0): output contains 'annotation.mark %alloc {hivm.stride_align_dims = array<i32: 0>, hivm.stride_align_value_in_byte = array<i32: 32>}' on memref operands — the concrete mark representation MarkStrideAlign leaves.",
+      "command": "build/bin/bishengir-opt --hivm-mark-stride-align -allow-unregistered-dialect bishengir/test/Dialect/HIVM/hivm-mark-storage-align.mlir -o /tmp/stride-marked.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HIVM/hivm-mark-storage-align.mlir",
+          "lines": "1-46"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-011",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt -hivm-enable-stride-align on bishengir/test/Dialect/HIVM/hivm-enable-stride-align-median-kernel.mlir (exit 0): output re-allocates with explicit alignment, e.g. 'memref.alloc() {alignment = 64 : i32} : memref<44xi16 ...>' — EnableStrideAlign realizes the marks as aligned allocations.",
+      "command": "build/bin/bishengir-opt -hivm-enable-stride-align bishengir/test/Dialect/HIVM/hivm-enable-stride-align-median-kernel.mlir -o /tmp/enable-out.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HIVM/hivm-enable-stride-align-median-kernel.mlir",
+          "lines": "1-10"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-012",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt --hfusion-auto-vectorize-v2 --outline-vector-function on bishengir/test/Dialect/HFusion/auto-vectorize-v2.mlir (exit 0): output contains outlined functions 'func.func @test_hfusion_indirect_load_outlined_vf_0/1/2(...) attributes {hivm.vector_function, no_inline}' — the scalar→VF-callee representation change AutoVectorizeV2+OutlineVectorFunction establish, which is exactly what MergeVecScope later consumes.",
+      "command": "build/bin/bishengir-opt --hfusion-auto-vectorize-v2 --outline-vector-function bishengir/test/Dialect/HFusion/auto-vectorize-v2.mlir -o /tmp/av2-out.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HFusion/auto-vectorize-v2.mlir",
+          "lines": "1-2"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-013",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt --hfusion-flatten-ops -allow-unregistered-dialect on bishengir/test/Dialect/HFusion/test-drop-unit-extent-dims-and-tidy-flatten.mlir (exit 0): the pass rewrites hfusion.elemwise_* ops over collapsed shapes (collapse_shape count 2 → 21 in this fixture), i.e. flattening materializes last-axis flattened views that vectorization groups can treat uniformly.",
+      "command": "build/bin/bishengir-opt --hfusion-flatten-ops -allow-unregistered-dialect bishengir/test/Dialect/HFusion/test-drop-unit-extent-dims-and-tidy-flatten.mlir -o /tmp/flatten-out.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HFusion/test-drop-unit-extent-dims-and-tidy-flatten.mlir",
+          "lines": "1-5"
+        }
+      ]
+    },
+    {
+      "id": "SYS-EV-014",
+      "class": "reasoning",
+      "statement": "The system-level causal chain: normalize shapes first (PropagateReshape+FlattenOps) so vectorization sees canonical last-axis ops; vectorize/outline next so VF granularity exists; merge VF scopes at tensor level (L1) to shrink the call graph bufferization analyzes; bufferize tensor→memref; merge again at memref level (L2) when L1 is not chosen; then mark and enable stride alignment in the memref world so later lowering sees aligned allocations. Each stage exists because its output is the next stage's input representation — remove any stage and either vectorization operates on irregular shapes, bufferization analyzes a fragmented call graph, or lowering sees unaligned UB buffers.",
+      "note": "Synthesis of SYS-EV-001..013; the 'why this order' is agent reasoning grounded in the cited pipeline spans, not a source statement."
+    },
+    {
+      "id": "SYS-EV-015",
+      "class": "unknown",
+      "statement": "No single committed test executes the full six-pass chain in one pipeline invocation in this repository; the end-to-end example in the system story is therefore STITCHED from real per-pass executions (SYS-EV-010..013) plus the child bundle's executed merge-vf runs — not one end-to-end dump.",
+      "note": "Honest accounting for the stitched example (Goal §27)."
+    }
+  ]
+}

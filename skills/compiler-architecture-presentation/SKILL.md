@@ -66,6 +66,8 @@ Verdicts and their meanings:
 - `STALE_PRESENTATION_INPUT` → stop; the explanation bundle must be refreshed through the code-explanation producer first. Never edit recorded SHAs to bypass.
 - `UNSUPPORTED_SCHEMA` → stop clearly; never guess fields of an unknown schema version.
 
+A system-story handoff (Phase T3 composition of multiple child bundles) is consumed exactly like any other Mode A handoff — there is no system-story mode and no special case: the storyline, visuals, canonical example, takeaways, and evidence index in the handoff are the deck's semantic input regardless of whether the subject is one class or a multi-pass pipeline. Recursion is invisible here: the preflight already refuses when any consumed child bundle (via composition imports) is stale.
+
 ### Mode B — TeachingDossier exists but no PresentationHandoff
 
 Do not invent the presentation story from the dossier yourself. Route back to the code-explanation workflow (`compiler_explain` / `skills/code-explanation/`) to produce the presentation-depth handoff, then return to Mode A:

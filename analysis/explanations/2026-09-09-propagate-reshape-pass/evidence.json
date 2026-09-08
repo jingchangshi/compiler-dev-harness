@@ -1,0 +1,186 @@
+{
+  "artifact": "evidence",
+  "records": [
+    {
+      "id": "EV-001",
+      "class": "source_fact",
+      "statement": "Pass identity and options: def PropagateReshape : Pass<\"propagate-reshape\", \"func::FuncOp\">, summary 'Propagate operations through reshape operations'; description says it identifies reshapes whose source is a linalg operation and moves the operation through the reshape (elemwise %b,%c + reshape %a becomes reshape %b, reshape %c + elemwise, then all uses of the original reshape use %a). Four options: for-hivm (bool, default false), for-regbased (bool, default false), skip-scope (bool, default true, 'Skip this pass when the function contains scope operations'), max-unit-dims-for-propagation (unsigned, default 10). Constructor mlir::tensor::createPropagateReshapePass().",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td", "lines": "60-92" }
+      ]
+    },
+    {
+      "id": "EV-002",
+      "class": "source_fact",
+      "statement": "Function-level skip gates in runOnOperation: (1) if queryFuncCoreType(f) yields hivm::TFuncCoreType::AIC the pass returns without rewriting (cube functions are skipped); (2) only when options.forRegbased && options.skipScope, hasScopeOperation(f) (a walk finding an op named \"scope.scope\") makes the pass return early. Both gates run before any pattern is built.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp", "lines": "54-79" }
+      ]
+    },
+    {
+      "id": "EV-003",
+      "class": "source_fact",
+      "statement": "Pattern-set assembly is option-dependent: always PropagateCollapseDownToI1Cast, canonicalization patterns of tensor/memref CollapseShapeOp+ExpandShapeOp, SwapCollapseExpand, PropagateExpandUp, PropagateCollapseDown, memref::PropagateMemrefExpandUp, memref::PropagateMemrefCollapseDown; PropagateNearEndExpandDown is added only when NOT forRegbased and memref::SwapMemrefCollapseExpand only when NOT forRegbased. The set is applied with applyPatternsGreedily; failure signals pass failure.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp", "lines": "81-99" }
+      ]
+    },
+    {
+      "id": "EV-004",
+      "class": "source_fact",
+      "statement": "SwapCollapseExpand rewrites expand(collapse(x)): it computes compatible ('fixed') then 'loose' reassociations between the collapse and expand, then creates a new tensor.expand_shape directly on collapse's source and a new tensor.collapse_shape reproducing the original expand result type, replacing all uses. It bails out when the collapse source has no defining op, when that op isStopPropagatable, or when every user of the expand is an out op; under forRegbased it additionally rejects when the common-refinement shape exceedsUnitDimPropagationLimit.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/SwapCollapseExpand.cpp", "lines": "42-103" }
+      ]
+    },
+    {
+      "id": "EV-005",
+      "class": "source_fact",
+      "statement": "PropagateExpandUp entry guards: under forRegbased reject when expand result shape exceeds the unit-dim threshold; the expand source must have a defining op that is not stop-propagatable (isStopPropagatable = isInitOp || arith::ConstantOp, per bishengir/lib/Dialect/Utils/Util.cpp:1392-1394); a cross-region defining op is allowed only under forRegbased with a single-use result (comment: 'A5 permits a cross-region move when the defining result is single-use; A3 keeps its stricter region boundary'); reject when all users of the expand are out ops (isOutOp = reshaping op or return op); under forHIVM additionally require isNonUnitExpandOrEmptyReassoc.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateExpandUp.cpp", "lines": "1281-1316" },
+        { "file": "bishengir/lib/Dialect/Utils/Util.cpp", "lines": "1392-1396" }
+      ]
+    },
+    {
+      "id": "EV-006",
+      "class": "source_fact",
+      "statement": "PropagateExpandUp op dispatch (which producers an expand may cross): hivm::BitcastOp, hfusion::MulExtOp, scf::ForOp (via PropagatableScfFor), tensor::ConcatOp, tensor::PadOp, linalg::BroadcastOp, hfusion::ReduceWithIndexOp, linalg::ReduceOp, hfusion::FlipOp (only forRegbased), linalg::TransposeOp, hivm::VTransposeOp (explicit TODO failure), hfusion::InterleaveOp/DeinterleaveOp, tensor::ExtractSliceOp/InsertSliceOp (only when NOT forHIVM), marked-elementwise and HIVM elemwise/copy/store/load ops, hivm::VBrcOp, hivm::VReduceOp, tensor::ExtractOp (only forRegbased), tensor::ArangeOp. Under forRegbased, expand-up across linalg::FillOp is rejected with an explicit comment: lifting expand across fill interacts with PropagateCollapseDown through concat/extract_slice chains and can make applyPatternsGreedily fail to reach a fixed point.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateExpandUp.cpp", "lines": "1316-1405" }
+      ]
+    },
+    {
+      "id": "EV-007",
+      "class": "source_fact",
+      "statement": "PropagateCollapseDown entry + user dispatch: under forRegbased reject when collapse source shape exceeds the unit-dim threshold; source must have a defining, non-stop-propagatable op; under forHIVM require isNonUnitExpandOrEmptyReassoc. Per-user dispatch: hivm::StoreOp; bufferization::MaterializeInDestinationOp (only forRegbased); hfusion::MulExtOp; annotation::MarkOp; ArangeOp; hivm::BitcastOp; tensor::ConcatOp; tensor::PadOp; linalg::BroadcastOp; hfusion::ReduceWithIndexOp (non-regbased rejects argmin/argmax-style 2-result reduces whose second result has users) and linalg::ReduceOp; tensor::ExtractSliceOp/InsertSliceOp (only when NOT forHIVM); marked-elementwise ops; hfusion::FlipOp (only forRegbased); linalg::TransposeOp; hivm::VTransposeOp (skipped, TODO); Interleave/Deinterleave; HIVM elemwise/copy/store/load; hivm::VBrcOp; hivm::VReduceOp (same argmin/argmax guard); tensor::ExtractOp. DPS ops without pure tensor semantics are skipped.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp", "lines": "1232-1360" }
+      ]
+    },
+    {
+      "id": "EV-008",
+      "class": "source_fact",
+      "statement": "Cross-region and iteration policy differ by mode: a user in a different parent region than the collapse is processed only when forRegbased AND the collapse has a single use (comment: 'RegBase follows A5 and permits the only user to cross a region boundary. Multiple users retain A3's boundary'); outside RegBase the pattern returns after the first handled user ('Preserve A3's one-at-a-time behavior'), while RegBase processes all snapshotted users together so greedy rewriting makes monotonic progress.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp", "lines": "1361-1379" }
+      ]
+    },
+    {
+      "id": "EV-009",
+      "class": "source_fact",
+      "statement": "The unit-dim threshold guard exceedsUnitDimPropagationLimit is literally `llvm::count(shape, 1) > maxUnitDims`, and the header FIXME states: unit dimensions can be repeatedly propagated through reshape patterns without changing element count, so rank is not bounded by the usual shape-factorization argument; the threshold is a temporary safeguard against non-termination until a semantic termination condition exists. It is checked in PropagateCollapseDown (collapse source), PropagateExpandUp (expand result) and SwapCollapseExpand (common refinement), always under forRegbased.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/Utils.cpp", "lines": "41-50" },
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp", "lines": "1233-1237" },
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/SwapCollapseExpand.cpp", "lines": "83-88" }
+      ]
+    },
+    {
+      "id": "EV-010",
+      "class": "source_fact",
+      "statement": "Placement (a): preFlattenPass (HFusionRegbasePipelines.cpp:207) nests func::FuncOp and adds tensor::createPropagateReshapePass() with default options at line 226, after BubbleUpExtractSlice/canonicalization/LinalgFoldUnitExtentDims/ArithToHFusion/ComposeMultiReduce/(optional symbol passes) and before SimplifyOps + canonicalization. preFlattenPass is invoked from the regbase buildHFusionPipelines in the non-Triton branch (both the !enableMultiKernel and enableMultiKernel arms).",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "207-228, 502-521" }
+      ]
+    },
+    {
+      "id": "EV-011",
+      "class": "source_fact",
+      "statement": "Placement (b): in regbase buildHFusionPipelines' Triton-kernel-compile branch, gated by `runRegBasePasses && options.enableFlatten` where runRegBasePasses = `!options.enableMixedCV && hacc::utils::isRegBasedArch(options.target)` (lines 504-505, 528), propagate-reshape is added with opts {forRegbased=true, forHIVM=false, skipScope=options.skipScope}, immediately followed by FoldTensorEmpty, CanonicalizeTensorReshape, canonicalization, and FlattenOps with flattenMode=Tidy, registerBased=true — i.e. BEFORE FlattenOps.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "502-548" }
+      ]
+    },
+    {
+      "id": "EV-012",
+      "class": "source_fact",
+      "statement": "Placement (c): buildHFusionRegBasePipeline (line 567) under `if (options.enableFlatten)` (line 570) adds propagate-reshape with {forRegbased=true, forHIVM=false} at 570-575, again immediately followed by FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization + FlattenOps (Tidy, registerBased=true). Its caller is buildDelayedHFusionRegBaseVectorizePipeline in bishengir-compile regbase PassPipeline.cpp (function at 301, call at 328), the delayed re-vectorization path that converts the vector side back to HFusion ('Convert the vector side back to HFusion dialects') before re-running this pipeline.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "565-596" },
+        { "file": "bishengir/lib/Tools/bishengir-compile/regbase/PassPipeline.cpp", "lines": "301-345" }
+      ]
+    },
+    {
+      "id": "EV-013",
+      "class": "source_fact",
+      "statement": "Placements (d) and (e), both forHIVM=true and both conditional on NOT being a reg-based target: (d) hivmPreBufferizationOptimizationPipeline (line 320) adds the pass only inside `if (!hacc::utils::isRegBasedArch(hivmPipelineOptions.target))` (line 322-330) and is called from buildHIVMTensorOptimizations (line 690); (e) buildConvertToHIVMPipeline (line 660) adds it only inside `if (!options.enableRegBaseHIVMPipe)` (line 675-682), right after HFusionToHIVM/TensorToHIVM/ConvertToHIVMOp conversions. Both carry the same comment: 'HIVM brc/reduce op's operands have the same rank, so after converting from Linalg/HFusion to HIVM, reshape ops will be inserted. Need to propagate them.' In bishengir-compile regbase PassPipeline.cpp:511-512, enableRegBaseHIVMPipe is set to hacc::utils::isRegBasedArch(config.getTarget()), so placement (e) is skipped exactly when the target IS reg-based.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp", "lines": "320-330, 660-690" },
+        { "file": "bishengir/lib/Tools/bishengir-compile/regbase/PassPipeline.cpp", "lines": "505-516" }
+      ]
+    },
+    {
+      "id": "EV-014",
+      "class": "source_fact",
+      "statement": "The pass also participates in the non-regbase (membase/A3-side) pipelines: HFusionPipelines.cpp preFlattenPass adds it with default options at line 145; HFusionPipelines.cpp buildHFusionPipelines' Triton branch adds it with forHIVM=true at 308-313 preceded by the comment 'TODO: refactor propagate reshape structure and option names'; HIVMPipelines.cpp hivmPreBufferizationOptimizationPipeline (line 214) adds it unconditionally with forHIVM=true at 216-222, with the same brc/reduce same-rank comment as the regbase file.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HFusion/Pipelines/HFusionPipelines.cpp", "lines": "124-147, 289-316" },
+        { "file": "bishengir/lib/Dialect/HIVM/Pipelines/HIVMPipelines.cpp", "lines": "214-222" }
+      ]
+    },
+    {
+      "id": "EV-015",
+      "class": "source_fact",
+      "statement": "Downstream consumer: FlattenOps in Tidy mode checks `if (this->registerBased && util::hasUnpropagateableCase(funcOp, this->skipScope)) return;` and then runs the Flattener over DimensionAnalyzer with options.registerBased — i.e. the flattener performs a whole-function shape analysis, which is why it is always preceded by FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization right after propagate-reshape in both forRegbased placements.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/HFusion/Transforms/FlattenOps.cpp", "lines": "117-137" },
+        { "file": "bishengir/lib/Dialect/HFusion/Pipelines/regbase/HFusionRegbasePipelines.cpp", "lines": "528-548, 570-588" }
+      ]
+    },
+    {
+      "id": "EV-016",
+      "class": "source_fact",
+      "statement": "Test propagate-reshape-a5-regbase.mlir runs the same IR twice (-propagate-reshape=\"for-regbased=false\" vs =true). flip_expand/flip_collapse: under REGBASE the hfusion.flip moves to expanded rank (expand_shape before flip, collapse_shape after, low-rank result preserved via a new collapse); under A3 the flip stays at low rank. flip_collapse_reject_group_axis: BOTH modes reject moving a flip whose axis spans multiple collapsed source dims, 'because that would change element order inside the group'.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-a5-regbase.mlir", "lines": "1-45" }
+      ]
+    },
+    {
+      "id": "EV-017",
+      "class": "source_fact",
+      "statement": "Test propagate-reshape-regbased-unit-dim.mlir: with default options a scalar linalg.reduce propagates through unit-dim expands (expanded src/init at rank 1/2); with `-propagate-reshape=\"for-regbased=true max-unit-dims-for-propagation=6\"` the reduce stays at low rank and the unit expand_shape moves after it — the same IR, different option, different shape ownership. extract_slice_unit_expand shows REGBASE slicing the low-rank source first and expanding after, DEFAULT expanding first and slicing.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-regbased-unit-dim.mlir", "lines": "1-45" }
+      ]
+    },
+    {
+      "id": "EV-018",
+      "class": "source_fact",
+      "statement": "Test propagate-reshape-propagatable-ops.mlir (both with and without for-regbased=true): mulext_through_collapse replaces BOTH collapsed mulext operands by their exact high-rank sources, keeps hfusion.mulext at tensor<2x3x4xi32> and emits a new collapse_shape on its result; mulext_collapse_shared_user keeps the original collapse for the extra \"test.keep\" user while MulExt still gets the high-rank source — shared users pin their own collapse.",
+      "tool": "source-read",
+      "refs": [
+        { "file": "bishengir/test/Dialect/Tensor/propagate-reshape-propagatable-ops.mlir", "lines": "1-53" }
+      ]
+    },
+    {
+      "id": "EV-019",
+      "class": "historical_fact",
+      "statement": "Git history of the pass: commit 6f924a1bc '[AscendNPU IR][A5 Sync][PropagateReshape] Port A5 PropagateReshape codes' introduced the A5/regbase behavior split; commit 92a45873b '[PropgateReshape, FoldUnitDims] Bound unit-dim reshape propagation' (2026-08-06, message: 'Limit register-based reshape propagation when a shape contains more than the configured number of unit dimensions') introduced max-unit-dims-for-propagation and wired the threshold into PropagateCollapseDown/PropagateExpandUp/SwapCollapseExpand; commit 940f87a06 '[AscendNPU IR][A5 Sync][Tensor] fix: guard unsafe reshape propagation' guarded unsafe propagation.",
+      "tool": "git-log/git-show",
+      "command": "git log --oneline -8 -- bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/ && git show 92a45873b --stat",
+      "commit": "92a45873b4806c0ac7991ab6e7777282dd113ef2",
+      "refs": [
+        { "file": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp" }
+      ]
+    }
+  ],
+  "note": "19 records: 18 source_fact + 1 historical_fact, all read at HEAD 90037fe3371cb88d50c42cd4e165075cbafe83b1. No runtime facts: the compiler was not run; test expectations are cited as checked-in FileCheck expectations, not as executions."
+}

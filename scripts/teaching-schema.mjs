@@ -29,6 +29,12 @@
 
 export const SCHEMA_VERSION = 1
 
+// Composition layer (Phase T3): the id space resolves parent evidence ids plus
+// namespaced child-bundle references (`alias::EV-ID`), and composition bundles
+// append their own mechanical checks. Pure module, no I/O, no cycle
+// (composition-schema imports nothing).
+import { compositionChecks, makeEvidenceIdSpace, validateComposition } from './composition-schema.mjs'
+
 export const SUBJECT_TYPES = [
   'function', 'class', 'algorithm', 'pass', 'module', 'subsystem', 'pipeline',
   'data_structure', 'workflow', 'component_group', 'other',
@@ -181,12 +187,19 @@ export function checkClaimEvidence(element, elementSource, ids, errors, expectFa
   for (const id of refs) {
     if (!ids.has(id)) error(errors, elementSource, `evidence_ref not found in ledger: ${id}`)
   }
-  if (expectFact && refs.length > 0 && ids.size > 0) {
-    const cited = refs.map((id) => lookupEvidenceClass(element.__ledger, id)).filter(Boolean)
+  if (expectFact && refs.length > 0 && hasIds(ids)) {
+    const cited = refs.map((id) => lookupEvidenceClass(element, id)).filter(Boolean)
     if (cited.length > 0 && cited.every((c) => !FACT_CLASSES.includes(c))) {
       error(errors, elementSource, `factual claim cites only non-fact evidence (${cited.join(', ')}) — reclass the claim as reasoning or add fact evidence`)
     }
   }
+}
+
+/** Duck-typed id-space check: works for a plain Set (parent ledger only) and
+ * for the composition id space (parent ledger + namespaced child imports). */
+function hasIds(ids) {
+  if (ids instanceof Set) return ids.size > 0
+  return typeof ids?.count === 'function' ? ids.count() > 0 : false
 }
 
 // Internal: evidence id → class lookup attached by validateBundle so
@@ -195,17 +208,22 @@ const CLASS_INDEX = Symbol('evidenceClassIndex')
 
 function lookupEvidenceClass(element, id) {
   const index = element?.[CLASS_INDEX]
-  return index instanceof Map ? index.get(id) : undefined
+  if (!index || !(index.map instanceof Map)) return undefined
+  const direct = index.map.get(id)
+  if (direct !== undefined) return direct
+  return typeof index.idSpace?.classOf === 'function' ? index.idSpace.classOf(id) : undefined
 }
 
-/** Attach the ledger class index to an element (internal, non-enumerable). */
-export function withEvidenceIndex(element, ledger) {
-  if (!isObject(element) || !isObject(ledger)) return element
+/** Attach the ledger class index to an element (internal, non-enumerable).
+ * `idSpace` (optional) extends class lookup to namespaced child-bundle
+ * references (`alias::EV-ID`) via declared composition imports. */
+export function withEvidenceIndex(element, ledger, idSpace) {
+  if (!isObject(element)) return element
   const index = new Map()
-  for (const r of ledger.records || []) {
+  for (const r of (ledger && ledger.records) || []) {
     if (isNonempty(r.id) && EVIDENCE_CLASSES.includes(r.class)) index.set(r.id, r.class)
   }
-  Object.defineProperty(element, CLASS_INDEX, { value: index, configurable: true })
+  Object.defineProperty(element, CLASS_INDEX, { value: { map: index, idSpace }, configurable: true })
   return element
 }
 
@@ -323,8 +341,10 @@ export function assessMentalModel(text) {
   }
 }
 
-/** Walk any artifact value and require every cited evidence id to resolve. */
+/** Walk any artifact value and require every cited evidence id to resolve.
+ * `ids` is a plain Set (parent ledger) or a composition id space (has/classOf). */
 function walkEvidenceRefs(value, source, ids, errors) {
+  const resolvable = (ref) => (ids instanceof Set || (ids && typeof ids.has === 'function')) ? ids.has(ref) : false
   if (Array.isArray(value)) {
     value.forEach((v, i) => walkEvidenceRefs(v, `${source}[${i}]`, ids, errors))
     return
@@ -337,13 +357,13 @@ function walkEvidenceRefs(value, source, ids, errors) {
         continue
       }
       for (const id of child) {
-        if (ids instanceof Set && !ids.has(id)) error(errors, `${source}.${key}`, `evidence_ref not found in ledger: ${id}`)
+        if (!resolvable(id)) error(errors, `${source}.${key}`, `evidence_ref not found in ledger: ${id}`)
       }
       continue
     }
     if (key === 'evidence_index' && Array.isArray(child)) {
       child.forEach((e, i) => {
-        if (isObject(e) && ids instanceof Set && !ids.has(e.id)) error(errors, `${source}.${key}[${i}]`, `evidence id not found in ledger: ${e.id}`)
+        if (isObject(e) && !resolvable(e.id)) error(errors, `${source}.${key}[${i}]`, `evidence id not found in ledger: ${e.id}`)
       })
       continue
     }
@@ -694,14 +714,21 @@ function check(name, status, detail) {
  * floor only: a pass here does NOT mean ready — READY additionally requires
  * the recorded semantic review (audience comprehension) to conclude ready.
  */
-export function computeMechanicalReadiness({ subject, evidence, dossier, handoff }, { depth = 'standard' } = {}) {
+export function computeMechanicalReadiness({ subject, evidence, dossier, handoff, composition }, { depth = 'standard', imports = [] } = {}) {
   const checks = []
   const errors = []
   const evidenceIds = validateEvidenceLedger(evidence, errors, 'evidence')
+  // Composition id space (Phase T3): parent ledger ids + namespaced child
+  // refs (`alias::EV-ID`) resolved through declared imports. Without imports
+  // this behaves exactly like the v1 parent-only resolution.
+  const parentClasses = new Map((evidence?.records || [])
+    .filter((r) => r !== null && typeof r === 'object' && isNonempty(r.id))
+    .map((r) => [r.id, r.class]))
+  const idSpace = makeEvidenceIdSpace(parentClasses, imports)
   if (subject) validateSubject(subject, errors, 'subject')
-  if (dossier) withEvidenceIndex(dossier, evidence || {})
-  if (dossier) validateDossier(dossier, evidenceIds, errors, 'dossier')
-  if (handoff) validateHandoff(handoff, evidenceIds, errors, 'handoff')
+  if (dossier) withEvidenceIndex(dossier, evidence || {}, idSpace)
+  if (dossier) validateDossier(dossier, idSpace, errors, 'dossier')
+  if (handoff) validateHandoff(handoff, idSpace, errors, 'handoff')
   const schemaFails = errors.filter((e) => !e.includes('readiness policy'))
   checks.push(check('schema_valid', schemaFails.length === 0 ? 'pass' : 'fail', schemaFails.length === 0 ? 'subject/evidence/dossier/handoff shapes valid' : schemaFails.slice(0, 10).join('; ')))
   if (!dossier) {
@@ -805,6 +832,14 @@ export function computeMechanicalReadiness({ subject, evidence, dossier, handoff
     checks.push(check('handoff_optional', 'pass', 'handoff present at non-presentation depth'))
   }
 
+  // Composition-specific mechanical floor (Phase T3): only when the bundle
+  // carries composition.json. Checks requested-component coverage, bridge
+  // evidence (including namespaced child refs), conflicts, representation
+  // boundaries, and the end-to-end flow skeleton.
+  if (composition !== undefined) {
+    checks.push(...compositionChecks({ composition, dossier, idSpace }, { depth: d }))
+  }
+
   return finish(checks)
 }
 
@@ -888,17 +923,24 @@ export function computeReadiness(bundle, options = {}) {
 // Bundle assembly + staleness
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Read and validate a bundle object {subject, evidence, dossier, handoff, readiness}. */
-export function validateBundle(bundle) {
+/** Read and validate a bundle object {subject, evidence, dossier, handoff,
+ * readiness, composition?}. `imports` (optional) carries resolved child
+ * evidence class maps so namespaced `alias::EV-ID` references resolve. */
+export function validateBundle(bundle, { imports = [] } = {}) {
   const errors = []
   const evidenceIds = validateEvidenceLedger(bundle.evidence, errors, 'evidence')
+  const parentClasses = new Map(((bundle.evidence && bundle.evidence.records) || [])
+    .filter((r) => r !== null && typeof r === 'object' && isNonempty(r.id))
+    .map((r) => [r.id, r.class]))
+  const idSpace = makeEvidenceIdSpace(parentClasses, imports)
   if (bundle.subject) validateSubject(bundle.subject, errors, 'subject')
   if (bundle.dossier) {
-    withEvidenceIndex(bundle.dossier, bundle.evidence || {})
-    validateDossier(bundle.dossier, evidenceIds, errors, 'dossier')
+    withEvidenceIndex(bundle.dossier, bundle.evidence || {}, idSpace)
+    validateDossier(bundle.dossier, idSpace, errors, 'dossier')
   }
-  if (bundle.handoff) validateHandoff(bundle.handoff, evidenceIds, errors, 'handoff')
+  if (bundle.handoff) validateHandoff(bundle.handoff, idSpace, errors, 'handoff')
   if (bundle.readiness) validateReadinessReport(bundle.readiness, errors, 'readiness')
+  if (bundle.composition) validateComposition(bundle.composition, errors, 'composition')
   return { errors, evidenceIds }
 }
 

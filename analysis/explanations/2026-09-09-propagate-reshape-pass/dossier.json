@@ -1,0 +1,421 @@
+{
+  "artifact": "teaching_dossier",
+  "schema_version": 1,
+  "subject_id": "propagate-reshape-pass",
+  "subject_type": "pass",
+  "depth": "standard",
+  "audience_contract": {
+    "primary": "compiler engineers touching the AscendNPU-IR regbase/membase pipeline story who need to know when reshapes move, which option set they inherited, and why a propagation was refused",
+    "assumed_background": "MLIR basics (tensor/memref reshape ops, reassociation indices, greedy rewrite drivers), no prior knowledge of this pass assumed"
+  },
+  "mental_model": "The pass treats a tensor reshape as a movable barrier: instead of letting an elementwise or shape-like op work on a reshaped view, it slides collapse_shape toward the function's outputs and expand_shape toward the producers, so surrounding ops see the rank that matches their math. One pattern family per direction, an expand/collapse pair swap to unlock deadlocked orders, and a per-mode option set that changes not only thresholds but which moves across region boundaries are even attempted.",
+  "need": "After conversion and canonicalization, IR mixes ops of different ranks connected by reshape ops: linalg/HFusion elemwise chains sit behind collapse_shape, and HIVM conversions insert reshape ops because HIVM brc/reduce demand same-rank operands. Downstream whole-function analyses (the Tidy/registerBased Flattener via DimensionAnalyzer) and vectorization need that reshape noise organized first — collapses pushed to the end, expands pushed upstream — otherwise the flattener either bails (hasUnpropagateableCase) or computes on a needlessly mixed-rank graph.",
+  "responsibility": "Inside one func::FuncOp, run an option-shaped set of greedy rewrite patterns that move tensor/memref collapse_shape and expand_shape ops across a curated set of producer/consumer ops (elementwise, broadcast/reduce, transpose, interleave/deinterleave, slices, concat/pad, HIVM elemwise/brc/reduce, scf.for via PropagatableScfFor), swapping collapse-expand pairs when reassociations allow, while refusing every move that would change element order or break the fixpoint.",
+  "observable_outcome": "Same values, different shape placement: elemwise ops operate at high rank with reshapes only at the boundaries (mulext test: both operands get the high-rank source and a fresh collapse_shape is emitted on the result); under forRegbased a flip migrates to expanded rank while a shared low-rank result is preserved with a new collapse; unit-dim expands under a set threshold stay put and the reduce/slice consumes the low-rank tensor instead. Functions that match no gate are returned unchanged; AIC functions and (under forRegbased+skipScope) scope-containing functions are never touched.",
+  "system_context": {
+    "upstream": [
+      {
+        "role": "reshape producers at HIVM conversion time",
+        "entity": "HFusionToHIVM / TensorToHIVM / ConvertToHIVMOp conversions",
+        "interaction": "Because HIVM brc/reduce operands must share rank, the conversions insert reshape ops that this pass must then re-propagate — the stated reason both forHIVM placements exist (placement d/e comment)",
+        "evidence_refs": ["EV-013"]
+      },
+      {
+        "role": "immediately preceding cleanup in the HFusion pipelines",
+        "entity": "canonicalizationPipeline, LinalgFoldUnitExtentDims, ComposeMultiReduce, optional symbol propagation",
+        "interaction": "preFlattenPass runs canonicalization and multi-reduce composition first so propagate-reshape sees a canonical tensor graph; propagate-reshape then runs before one more SimplifyOps + canonicalization round",
+        "evidence_refs": ["EV-010"]
+      },
+      {
+        "role": "elementwise + reshape mix from frontends and earlier lowering",
+        "entity": "Torch/HFusion-level lowering and tensor canonicalization",
+        "interaction": "produces the elemwise-behind-reshape pattern the pass description targets; canonicalization patterns of collapse/expand are re-registered inside the pass's own pattern set so folding and propagation interleave in one greedy sweep",
+        "evidence_refs": ["EV-001", "EV-003"]
+      }
+    ],
+    "downstream": [
+      {
+        "role": "whole-function shape flattener",
+        "entity": "FlattenOps (hfusion-flatten-ops, Tidy mode, registerBased=true)",
+        "interaction": "in both forRegbased placements the pass runs immediately before FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization + FlattenOps; the flattener analyzes the entire function and bails on unpropagateable cases, so the reshape layout this pass establishes is its starting position",
+        "evidence_refs": ["EV-011", "EV-012", "EV-015"]
+      },
+      {
+        "role": "pre-bufferization HIVM optimizations",
+        "entity": "hivmPreBufferizationOptimizationPipeline → bufferization",
+        "interaction": "the forHIVM placement runs at the head of this pipeline (followed by RemoveRedundantLoopInit, NormalizeMatmul, InsertFixpipe, …), giving bufferization a graph where brc/reduce reshapes have been pushed to their natural ends",
+        "evidence_refs": ["EV-013"]
+      },
+      {
+        "role": "regbase vectorization",
+        "entity": "hfusionAutoVectorizePipeline / AutoVectorizeV2",
+        "interaction": "runs after the HFusion flatten block (buildHFusionRegBasePipeline ends with it), so vectorization consumes the flattened, propagation-normalized shapes",
+        "evidence_refs": ["EV-012"]
+      }
+    ],
+    "triggers": [
+      {
+        "role": "pipeline builders",
+        "entity": "buildHFusionPipelines / buildHFusionRegBasePipeline / buildConvertToHIVMPipeline / buildHIVMTensorOptimizations (regbase and non-regbase variants), wired by bishengir-compile",
+        "interaction": "each decides independently whether to insert the pass and with which option shape (default, forRegbased, or forHIVM), based on enableFlatten, enableTritonKernelCompile, enableMixedCV and hacc::utils::isRegBasedArch(target)",
+        "evidence_refs": ["EV-010", "EV-011", "EV-012", "EV-013"]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "name": "func.func body (tensor form)",
+      "form": "ranked tensor SSA graph containing tensor.collapse_shape / tensor.expand_shape (and, for the memref companions, their memref counterparts) with producer/consumer ops from linalg, hfusion, hivm, tensor, scf",
+      "description": "operates on the whole function; AIC-labeled functions and scope-containing functions (regbase mode) are filtered out before pattern application",
+      "evidence_refs": ["EV-002", "EV-007"]
+    },
+    {
+      "name": "PropagateReshapeOptions",
+      "form": "forHIVM=false, forRegbased=false, skipScope=true, maxUnitDimsForPropagation=10 by default; set per placement",
+      "description": "the option triple selects pattern membership, region-boundary policy, unit-dim thresholds and the skip gate",
+      "evidence_refs": ["EV-001", "EV-003"]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "rewritten function (or unchanged)",
+      "form": "same function, reshapes relocated: collapses adjacent to function outputs/ends, expands adjacent to producers, expand-collapse pairs swapped to a common refinement, elemwise/brc/reduce/flip ops operating at the rank that matches their math",
+      "description": "original reshapes are replaced (replaceAllUsesWith) by newly created collapse/expand ops at the moved positions; a failing greedy rewrite signals pass failure instead of emitting invalid IR",
+      "evidence_refs": ["EV-004", "EV-003", "EV-018"]
+    }
+  ],
+  "mechanism": {
+    "summary": "Per function: gate, assemble an option-dependent pattern set, and run one greedy rewrite sweep in which four pattern families (collapse-down, expand-up, collapse/expand swap, near-end expand-down) plus canonicalizers drive reshapes to their mode-preferred positions until a fixpoint.",
+    "stages": [
+      {
+        "name": "Function-level skip gate",
+        "what": "build the options struct from the pass flags; return untouched if the function is AIC-labeled (queryFuncCoreType) or — only in regbase mode with skipScope — contains a scope.scope op",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp:64-79",
+        "key_functions": ["PropagateReshapePass::runOnOperation", "hasScopeOperation", "mlir::hivm::queryFuncCoreType"],
+        "evidence_refs": ["EV-002"]
+      },
+      {
+        "name": "Option-dependent pattern assembly",
+        "what": "register the i1-cast collapse pattern, the four tensor/memref canonicalizers, SwapCollapseExpand, PropagateExpandUp, PropagateCollapseDown, the memref propagate pair, plus PropagateNearEndExpandDown and memref::SwapMemrefCollapseExpand only outside regbase mode",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp:81-95",
+        "key_functions": ["RewritePatternSet::add", "CollapseShapeOp::getCanonicalizationPatterns"],
+        "evidence_refs": ["EV-003"]
+      },
+      {
+        "name": "Greedy rewrite to fixpoint",
+        "what": "applyPatternsGreedily over the function; any pattern failure inside the driver signals pass failure (signalPassFailure) rather than silently continuing",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp:97-99",
+        "key_functions": ["applyPatternsGreedily", "signalPassFailure"],
+        "evidence_refs": ["EV-003"]
+      },
+      {
+        "name": "Collapse-down propagation",
+        "what": "for each tensor.collapse_shape with a non-stop-propagatable defining op, walk its users and dispatch by op kind (store, materialize-in-destination, mulext, annotation mark, arange, bitcast, concat, pad, broadcast, reduce-like, slices, elementwise, flip, transpose, interleave/deinterleave, HIVM elemwise/brc/reduce, extract): rebind the user to the high-rank source and re-create a collapse on the user's result; DPS ops without pure tensor semantics and unhandled kinds are left alone",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateCollapseDown.cpp:1232-1379 (handlers at 80-1230)",
+        "key_functions": ["PropagateCollapseDown::matchAndRewrite", "handleElementwiseOp", "handleReduceLikeOp", "PropagatableMulExt", "PropagatableAnnotationMark"],
+        "evidence_refs": ["EV-007", "EV-008"]
+      },
+      {
+        "name": "Expand-up propagation",
+        "what": "for each tensor.expand_shape, inspect its defining op and dispatch through the same op families (plus scf::ForOp via PropagatableScfFor): recreate the producer at expanded rank and collapse back at the boundary; entry guards enforce stop-propagatability, out-only users, cross-region policy, the forHIVM non-unit requirement and the forRegbased unit-dim threshold",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateExpandUp.cpp:1281-1405",
+        "key_functions": ["PropagateExpandUp::matchAndRewrite", "handleBroadcastOp", "handleHIVMBroadcastOp", "PropagatableScfFor"],
+        "evidence_refs": ["EV-005", "EV-006"]
+      },
+      {
+        "name": "Collapse/expand swap",
+        "what": "rewrite expand(collapse(x)) by computing fixed then loose reassociation compatibility to a common refinement shape, then placing a new expand on the collapse source and a new collapse reproducing the original result — unlocking the orders the two directional patterns cannot move directly",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/SwapCollapseExpand.cpp:42-103",
+        "key_functions": ["SwapCollapseExpand::matchAndRewrite", "areReassociationsCompatible", "areLooseReassociationsCompatible"],
+        "evidence_refs": ["EV-004"]
+      },
+      {
+        "name": "Near-end expand-down (non-regbase only)",
+        "what": "when every user of an expand is the expand itself, a return, or an elemwise store/copy/load chain with a single DPS input, push the expand past those final elemwise users toward the end of the function — registered only when NOT forRegbased",
+        "where": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/PropagateNearEndExpandDown.cpp:118-187",
+        "key_functions": ["PropagateNearEndExpandDown::matchAndRewrite", "handleElementwiseOp", "areValidUsers"],
+        "evidence_refs": ["EV-003"]
+      }
+    ],
+    "control_flow": [
+      "pipeline builders (option shape chosen by isRegBasedArch/enableFlatten/enableTritonKernelCompile) drive the pass, which never calls other passes",
+      "inside the pass, runOnOperation drives one greedy rewrite driver; the driver chooses pattern application order by benefit, so the four families interleave rather than run in phases"
+    ],
+    "data_flow": [
+      "value identity is preserved end-to-end: patterns rewrite operand wiring and re-create collapse/expand wrappers around unchanged compute ops (updateDefiningOp + expandAndReplace/collapseAndReplace)",
+      "the only 'data' that moves is rank: an op's operands/results are re-typed between the reshaped and unreshaped shapes, with reassociation indices recomputed (renumberReassociation, dim inc/dec helpers)"
+    ],
+    "mutable_state": false,
+    "has_important_branching": true
+  },
+  "canonical_example": {
+    "provenance": {
+      "kind": "test",
+      "source": "bishengir/test/Dialect/Tensor/propagate-reshape-a5-regbase.mlir @ HEAD 90037fe3 (checked-in FileCheck expectations, read but NOT executed; runtime_verification none)"
+    },
+    "initial_state": "func.func @flip_expand(%arg0: tensor<2x12x5xf32>): hfusion.flip at low rank (flip_axis=2) → tensor.expand_shape [[0],[1,2],[3]] → math.absf at tensor<2x3x4x5xf32>, with the low-rank flipped value also returned",
+    "inputs": "the same .mlir run twice by the test harness with -propagate-reshape=\"for-regbased=false\" (A3 prefix) and \"for-regbased=true\" (REGBASE prefix)",
+    "execution_trace": [
+      "REGBASE: PropagateExpandUp crosses hfusion.flip (FlipOp handling is regbase-only): the expand moves above the flip, which now flips axis 3 of tensor<2x3x4x5xf32>",
+      "REGBASE: because %flipped still has a second (low-rank) user — the return — a new tensor.collapse_shape is created on the moved flip's result to preserve that user (shared users pin their own collapse)",
+      "A3: with for-regbased=false the FlipOp dispatch does not exist, so the flip stays below/above as written and only the expand/collapse canonicalizations apply",
+      "counter-example in the same file: flip_collapse_reject_group_axis keeps the flip at low rank in BOTH modes — a flip axis spanning a reassociation group ([1,2]) would reorder elements inside the group, so the move is refused"
+    ],
+    "result": "REGBASE expects expand → flip(axis=3) → collapse(low-rank) → return; A3 expects flip(axis=2, low rank) → expand → return — identical math, different shape ownership"
+  },
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Which functions does the pass process at all?",
+      "condition": "queryFuncCoreType(f) == hivm::TFuncCoreType::AIC, or (forRegbased && skipScope && the function contains a scope.scope op)",
+      "outcomes": [
+        "AIC function → return immediately, no rewrite (cube-side code is out of scope)",
+        "regbase mode + scope op present → return immediately, no rewrite",
+        "otherwise → proceed to pattern application (note: with default options skipScope has no effect because the guard is conjunct with forRegbased)"
+      ],
+      "reason": "cube functions and scope-structured regbase functions have shape semantics this pass's analysis does not model; skipping is cheaper and safer than partial legality",
+      "evidence_refs": ["EV-002"]
+    },
+    {
+      "id": "D2",
+      "question": "Which pattern families are assembled for this run?",
+      "condition": "options.forRegbased",
+      "outcomes": [
+        "regbase: no PropagateNearEndExpandDown, no memref::SwapMemrefCollapseExpand — the pattern set is the regbase subset",
+        "non-regbase: full set including the near-end expand-down and the memref swap"
+      ],
+      "reason": "regbase mode replaces the A3-era near-end/memref behaviors with its own cross-region and batch-processing policy instead of adding on top",
+      "evidence_refs": ["EV-003"]
+    },
+    {
+      "id": "D3",
+      "question": "Which mode's dispatch table applies to a reshape's neighbor op?",
+      "condition": "forRegbased vs forHIVM vs default, evaluated per candidate op",
+      "outcomes": [
+        "hfusion::FlipOp and tensor::ExtractOp (expand-up) and bufferization::MaterializeInDestinationOp are crossed only under forRegbased",
+        "tensor::ExtractSliceOp/InsertSliceOp are crossed only when NOT forHIVM",
+        "linalg::FillOp expand-up is refused under forRegbased (documented non-termination interaction with collapse-down via concat/extract_slice chains)",
+        "VReduceOp/ReduceWithIndexOp argmin-argmax-style second results block propagation unless forRegbased"
+      ],
+      "reason": "each mode has different correctness and fixpoint constraints: regbase adds reg-local ops and stricter fixpoint protection, HIVM mode excludes slice forms its conversions re-generate",
+      "evidence_refs": ["EV-006", "EV-007"]
+    },
+    {
+      "id": "D4",
+      "question": "Does a reshape cross a region boundary?",
+      "condition": "candidate op's parent region differs, and mode: allowed only when forRegbased AND the reshape/defining result has exactly one use",
+      "outcomes": [
+        "regbase + single use → the move crosses the boundary (A5 policy)",
+        "multiple users or non-regbase → stay inside the region (A3 policy: never move shared producers across regions)"
+      ],
+      "reason": "moving a multi-use producer across a region would duplicate or strand uses; regbase permits exactly the single-use case and then processes all snapshotted users together so the greedy driver makes monotonic progress",
+      "evidence_refs": ["EV-008", "EV-005"]
+    },
+    {
+      "id": "D5",
+      "question": "Is a candidate shape too unit-dim-heavy to propagate?",
+      "condition": "forRegbased && llvm::count(shape, 1) > maxUnitDimsForPropagation (default 10), checked on the collapse source (collapse-down), expand result (expand-up) and the swap's common refinement",
+      "outcomes": [
+        "exceeds threshold → match failure, the reshape stays where it is",
+        "within threshold → propagation proceeds"
+      ],
+      "reason": "the FIXME-documented hazard: unit dims can be re-propagated endlessly without changing element count, so rank is unbounded by shape factorization; the threshold is an explicit temporary termination safeguard introduced by commit 92a45873b",
+      "evidence_refs": ["EV-009", "EV-019", "EV-017"]
+    },
+    {
+      "id": "D6",
+      "question": "Which pipeline placement and option shape does this compile use?",
+      "condition": "target reg-based? flatten enabled? Triton kernel compile? regbase HIVM pipe?",
+      "outcomes": [
+        "reg-based target + enableFlatten → forRegbased variant immediately before FlattenOps (placements b, c)",
+        "any HFusion pipeline pre-flatten stage → default options (placements a, and the membase twin)",
+        "target NOT reg-based → forHIVM variant right after ConvertToHIVM and in the pre-bufferization pipeline (placements d, e; enableRegBaseHIVMPipe is isRegBasedArch(target)) — i.e. both HIVM-side regbase-file placements are skipped when the target IS reg-based",
+        "membase Triton branch → forHIVM variant in buildHFusionPipelines (non-regbase file)"
+      ],
+      "reason": "the same reshape problem appears at three different representation boundaries (HFusion pre-flatten, post-HIVM-conversion, pre-bufferization), and each boundary needs a different option shape; the regbase story deliberately re-derives shapes via FlattenOps instead of re-running HIVM-mode propagation",
+      "evidence_refs": ["EV-010", "EV-011", "EV-012", "EV-013", "EV-014"]
+    }
+  ],
+  "constraints": [
+    {
+      "statement": "Propagation must preserve element order and count: flip axes spanning a reassociation group are refused in every mode because the move would reorder elements inside the group",
+      "status": "verified",
+      "evidence_refs": ["EV-016"]
+    },
+    {
+      "statement": "A reshape's source/defining op must exist and must not be stop-propagatable (isInitOp or arith::ConstantOp); reshapes rooted at constants or function inits never move",
+      "status": "guarded",
+      "evidence_refs": ["EV-005", "EV-007"]
+    },
+    {
+      "statement": "The greedy driver must reach a fixed point; the pass explicitly refuses the expand-up-over-fill move under regbase because it documented non-termination interacting with collapse-down through concat/extract_slice chains",
+      "status": "guarded",
+      "evidence_refs": ["EV-006"]
+    },
+    {
+      "statement": "Rank growth under unit-dim propagation is not bounded by shape factorization; maxUnitDimsForPropagation (default 10) is a declared temporary termination safeguard, to be replaced by a semantic condition",
+      "status": "guarded",
+      "evidence_refs": ["EV-009"]
+    },
+    {
+      "statement": "DPS ops without pure tensor semantics and ops the dispatch does not recognize (including hivm::VTransposeOp, a marked TODO) are left untouched rather than partially rewritten",
+      "status": "guarded",
+      "evidence_refs": ["EV-006", "EV-007"]
+    }
+  ],
+  "invariants": [
+    {
+      "statement": "All rewrites keep the function's external behavior: moved reshapes are view-like ops, and every replaced reshape's users are re-bound to a newly created collapse/expand that reproduces the original type",
+      "status": "verified",
+      "evidence_refs": ["EV-004", "EV-018"]
+    },
+    {
+      "statement": "Shared users are honored: when a reshaped value has multiple users, propagation re-binds only the propagatable user(s) and keeps/emits a collapse for the others (mulext shared-user test)",
+      "status": "verified",
+      "evidence_refs": ["EV-018", "EV-016"]
+    },
+    {
+      "statement": "The pass is per-function and stateless between functions: every decision derives from the options struct fixed at construction plus local IR inspection",
+      "status": "verified",
+      "evidence_refs": ["EV-002", "EV-003"]
+    }
+  ],
+  "boundaries": [
+    {
+      "category": "supported",
+      "statement": "Crossing elementwise (marked and HIVM nary), linalg broadcast/reduce/transpose, hfusion flip/interleave/deinterleave/mulext/reduce-with-index, tensor concat/pad/extract, slices (mode-gated), HIVM brc/reduce/copy/store/load/bitcast, scf.for (expand-up), and annotation marks",
+      "evidence_refs": ["EV-006", "EV-007"]
+    },
+    {
+      "category": "partially_supported",
+      "statement": "scf.for propagation exists only on the expand-up side via PropagatableScfFor; the collapse-down side has no corresponding handler in the dispatch",
+      "evidence_refs": ["EV-006", "EV-007"]
+    },
+    {
+      "category": "rejected_by_design",
+      "statement": "Moves that change element order (flip over a reassociation group), expand-up over linalg.fill under regbase (fixpoint hazard), propagation into AIC functions and scope-containing functions in regbase mode, and reshapes rooted at constants/inits",
+      "evidence_refs": ["EV-016", "EV-006", "EV-002", "EV-005"]
+    },
+    {
+      "category": "potential_risk",
+      "statement": "The unit-dim threshold is an admitted stopgap: a shape above the default threshold silently stops propagating, so behavioral differences between modes (test shows DEFAULT vs REGBASE giving opposite shape ownership) are option-dependent by design",
+      "evidence_refs": ["EV-009", "EV-017"]
+    },
+    {
+      "category": "unknown",
+      "statement": "No handler for func.call/return-boundary propagation appears in either dispatch; whether reshape propagation across function boundaries is handled elsewhere was not determined from the files read",
+      "evidence_refs": ["EV-006", "EV-007"]
+    }
+  ],
+  "placement": {
+    "applicable": true,
+    "why_here": "It sits at the last moments where shapes are still explicit tensor reshapes: before the Tidy/registerBased Flattener consumes the whole function's shape structure (regbase flatten placements), and immediately after HIVM conversion / before bufferization where conversions themselves insert reshapes (forHIVM placements). Canonicalizers run right before it, and FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization run right after, so it works on a canonical graph and hands a normalized one onward.",
+    "why_not_earlier": "Earlier, the graph still contains multi-reduce compositions, uncanonicalized slices and (on the HIVM side) hasn't been converted yet — the reshapes it propagates (especially the conversion-inserted brc/reduce reshapes) do not exist until those steps run.",
+    "why_not_later": "After FlattenOps/AutoVectorizeV2 the explicit reshape structure is gone (shapes are flattened/vectorized), and after bufferization reshapes become memref views where this tensor-level analysis no longer applies; the memref companion patterns exist precisely as the late-stage fallback within the same pass.",
+    "status": "derived from placement code and surrounding pass order"
+  },
+  "ownership": {
+    "owner_directory": "bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape/ (patterns + utils), driver at bishengir/lib/Dialect/Tensor/Transforms/PropagateReshape.cpp, tablegen at bishengir/include/bishengir/Dialect/Tensor/Transforms/Passes.td",
+    "shared": "legality helpers (isStopPropagatable/isOutOp) live in bishengir/lib/Dialect/Utils/Util.cpp and are shared with HFusion reshape utilities; memref pattern implementations live under bishengir/lib/Dialect/MemRef/Transforms/PropagateReshape/"
+  },
+  "complexity": {
+    "pattern_count": "7 pattern families in the driver (4 tensor-level + 2 memref propagate + memref swap), ~5.3k lines across the PropagateReshape directory (measured with wc -l)",
+    "dispatch_breadth": "the two directional patterns each dispatch over ~20 op kinds with per-mode gates",
+    "provenance": "derived (line counts and dispatch cases counted from source at HEAD)"
+  },
+  "key_takeaways": [
+    "propagate-reshape moves reshapes, not data: collapse_shape slides toward function outputs, expand_shape toward producers, so consumers do math at their natural rank — and the original reshape is always replaced by a fresh pair that reproduces each user's type",
+    "forRegbased/forHIVM are not tuning knobs but mode switches that change the pattern set, the region-boundary policy (A3 one-at-a-time + no cross-region vs A5 single-use cross-region + batch users), and the dispatch table itself",
+    "the regbase story is conditional: with a reg-based target the pass runs (only if flatten is enabled) before FlattenOps, while BOTH HIVM-file placements are skipped exactly when the target is reg-based — they exist to clean up conversion-inserted reshapes on the non-regbased path",
+    "legality is mostly about element order and termination: flip-over-group rejections and the FIXME-documented unit-dim threshold (default 10) show the pass defends the fixpoint, and the fill rejection proves non-termination was a real occurrence",
+    "it is a pre-analysis normalizer: its value is measured by what FlattenOps, bufferization and vectorization receive — organized reshape boundaries — not by any performance claim of its own"
+  ],
+  "extensions": {
+    "pass": {
+      "pass_arg": "bishengir-opt --propagate-reshape (defaults: for-hivm=false, for-regbased=false, skip-scope=true, max-unit-dims-for-propagation=10); mode examples from the tests: --propagate-reshape=\"for-regbased=true max-unit-dims-for-propagation=6\", --propagate-reshape=\"for-regbased=false\"",
+      "operation_scope": "func::FuncOp (tablegen pass scope); whole-function greedy rewrite; AIC functions and (forRegbased+skipScope) scope-containing functions are excluded; no module-level or region-level entry",
+      "pipeline_placements": [
+        {
+          "pipeline": "HFusion regbase pipelines (HFusionRegbasePipelines.cpp)",
+          "function": "preFlattenPass",
+          "position": "line 226, after canonicalization/LinalgFoldUnitExtentDims/ComposeMultiReduce (and optional symbol passes), before SimplifyOps + canonicalization; reached from buildHFusionPipelines' non-Triton branch",
+          "gate": "unconditional within preFlattenPass (which itself runs when !enableTritonKernelCompile)",
+          "options": "default (forHIVM=false, forRegbased=false, skipScope=true)",
+          "evidence_refs": ["EV-010"]
+        },
+        {
+          "pipeline": "HFusion regbase pipelines — buildHFusionPipelines, Triton-kernel-compile branch",
+          "function": "buildHFusionPipelines",
+          "position": "lines 528-533, immediately before FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization + FlattenOps(Tidy, registerBased)",
+          "gate": "runRegBasePasses && options.enableFlatten, where runRegBasePasses = !options.enableMixedCV && hacc::utils::isRegBasedArch(options.target) (lines 504-505, 528)",
+          "options": "forRegbased=true, forHIVM=false, skipScope=options.skipScope",
+          "evidence_refs": ["EV-011"]
+        },
+        {
+          "pipeline": "HFusion regbase pipelines — buildHFusionRegBasePipeline (delayed re-vectorization path)",
+          "function": "buildHFusionRegBasePipeline",
+          "position": "lines 570-575, immediately before FoldTensorEmpty + CanonicalizeTensorReshape + canonicalization + FlattenOps(Tidy, registerBased); pipeline ends with hfusionAutoVectorizePipeline",
+          "gate": "options.enableFlatten (line 570); the pipeline is invoked from bishengir-compile regbase PassPipeline.cpp:328 inside buildDelayedHFusionRegBaseVectorizePipeline (gated there by !disableHfusionVectorize)",
+          "options": "forRegbased=true, forHIVM=false (skipScope default true)",
+          "evidence_refs": ["EV-012"]
+        },
+        {
+          "pipeline": "HIVM regbase pipelines — hivmPreBufferizationOptimizationPipeline",
+          "function": "hivmPreBufferizationOptimizationPipeline",
+          "position": "lines 322-330, first pass of the pre-bufferization optimization pipeline (before RemoveRedundantLoopInit, NormalizeMatmul, InsertFixpipe, …); called from buildHIVMTensorOptimizations:690",
+          "gate": "ONLY when the target is NOT reg-based: if (!hacc::utils::isRegBasedArch(hivmPipelineOptions.target)) — skipped for reg-based targets",
+          "options": "forHIVM=true; comment: HIVM brc/reduce same-rank constraint makes conversions insert reshapes that must be propagated",
+          "evidence_refs": ["EV-013"]
+        },
+        {
+          "pipeline": "HIVM regbase pipelines — buildConvertToHIVMPipeline",
+          "function": "buildConvertToHIVMPipeline",
+          "position": "lines 675-682, immediately after HFusionToHIVM + TensorToHIVM + ConvertToHIVMOp conversions",
+          "gate": "ONLY when !options.enableRegBaseHIVMPipe; enableRegBaseHIVMPipe is set to hacc::utils::isRegBasedArch(config.getTarget()) in bishengir-compile regbase PassPipeline.cpp:511-512 — so again skipped exactly for reg-based targets",
+          "options": "forHIVM=true; same brc/reduce same-rank comment",
+          "evidence_refs": ["EV-013"]
+        },
+        {
+          "pipeline": "HFusion (membase/non-regbase) pipelines",
+          "function": "preFlattenPass",
+          "position": "HFusionPipelines.cpp line 145, same slot as the regbase twin",
+          "gate": "unconditional within preFlattenPass",
+          "options": "default",
+          "evidence_refs": ["EV-014"]
+        },
+        {
+          "pipeline": "HFusion (membase) pipelines — buildHFusionPipelines, Triton branch",
+          "function": "buildHFusionPipelines",
+          "position": "HFusionPipelines.cpp lines 308-313 after CanonicalizeTensorReshape",
+          "gate": "unconditional within the enableTritonKernelCompile branch; comment: 'TODO: refactor propagate reshape structure and option names'",
+          "options": "forHIVM=true",
+          "evidence_refs": ["EV-014"]
+        },
+        {
+          "pipeline": "HIVM (membase) pipelines — hivmPreBufferizationOptimizationPipeline",
+          "function": "hivmPreBufferizationOptimizationPipeline",
+          "position": "HIVMPipelines.cpp lines 216-222, head of the pre-bufferization optimization pipeline",
+          "gate": "unconditional (no isRegBasedArch guard in this file)",
+          "options": "forHIVM=true; same brc/reduce same-rank comment",
+          "evidence_refs": ["EV-014"]
+        }
+      ],
+      "ir_contract": {
+        "before": "a func.func where tensor.collapse_shape / tensor.expand_shape (and memref twins) sit between producers and consumers of different ranks: e.g. elemwise ops reading a collapsed view (mulext test: elemwise_binary → collapse_shape → mulext at tensor<6x4xi32>), or flips/reduces/slices consuming reshaped values",
+        "after": "reshapes relocated to the boundary: the mulext case becomes elemwise_binary → mulext at tensor<2x3x4xi32> → collapse_shape back to tensor<6x4xi32> per user; the regbase flip case becomes expand_shape → flip at expanded rank → collapse_shape for the low-rank user; collapse-expand pairs may be re-associated onto a common refinement shape; untouched ops keep their exact types",
+        "element_preservation": "element count and order are preserved in every rewrite; moves that could reorder (flip over a reassociation group) are refused in all modes",
+        "evidence_refs": ["EV-018", "EV-016", "EV-004"]
+      },
+      "legality": [
+        "source/defining op must exist and not be stop-propagatable (isInitOp || arith::ConstantOp)",
+        "reassociation compatibility: swap requires fixed then loose reassociation agreement on a common refinement shape",
+        "element order: flips only move when their axis maps to a single source dimension inside the reassociation group",
+        "cross-region moves: only forRegbased and only for single-use values",
+        "unit-dim budget: forRegbased rejects shapes with more than maxUnitDimsForPropagation (default 10) unit dims",
+        "fixpoint protection: expand-up over linalg.fill refused under forRegbased; argmin/argmax-style second results block reduce propagation unless forRegbased; DPS ops without pure tensor semantics skipped",
+        "if applyPatternsGreedily still fails, the pass signals failure rather than emitting the intermediate state"
+      ],
+      "rewrite": "Greedy pattern rewrite with no separate analysis: each match rebinds operands (updateDefiningOp / updateDefiningOpNonDst), re-creates reshapes at the moved position via shared utilities (expandAndReplace / collapseAndReplace / createNewReshapingOp, renumberReassociation and the dim inc/dec reassociation helpers), and replaces the old reshape's uses; the swap pattern replaces expand(collapse(x)) with a new pair on the common refinement; all creations are plain rewrites so the driver owns convergence"
+    }
+  }
+}
