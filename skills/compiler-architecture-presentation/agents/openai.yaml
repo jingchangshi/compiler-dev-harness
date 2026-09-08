@@ -1,0 +1,12 @@
+interface:
+  display_name: Compiler Architecture Presentation
+  short_description: Build evidence-first compiler architecture HTML slides
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

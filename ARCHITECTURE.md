@@ -30,6 +30,7 @@ Compiler Dev 是一个 DeepSeek Harness **agent preset**(per-session agent 组�
 | `compiler-knowledge-v3.cjs` | 本地 Cordis 插件:`compiler_route` + `compiler_knowledge` 工具 + always-on 知识路由段(第 3.3 节、第 13 章;v3 = correlation id 发布) |
 | `compiler-knowledge-driver.mjs` | 知识查询驱动,被插件 in-process import(第 13 章) |
 | `skills/compiler-development/SKILL.md` | preset 本地 skill:条件性详细指南(第 5 章) |
+| `skills/compiler-architecture-presentation/` | preset 本地 skill:代码/IR/设计笔记 → Quarto Reveal.js 架构/Pass 说明 slides(中文优先、Excalidraw 源图、QMD 为源、HTML 为产物) |
 | `REPOSITORY_CONTRACT_TEMPLATE.md` | 人类维护的**团队**仓库契约模板——模板产物落在目标仓库,不在本仓库(第 6 章) |
 | `contracts/<Profile>/{REPOSITORY_PROFILE.md,AGENTS.local.md,profile.json}` | harness 拥有的仓库 profile 与 host-local 事实源;**不含**团队 `AGENTS.md` 快照(第 6 章) |
 | `scripts/prepare-workspace.mjs` | workspace 准备:把 harness profile+local 事实物化为目标仓库的 `AGENTS.local.md` 托管副本,并通过 `info/exclude` 本地排除(第 6 章) |
