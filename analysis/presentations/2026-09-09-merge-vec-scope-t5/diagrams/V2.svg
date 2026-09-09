@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1219 482" width="100%" height="100%">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>
+<rect x="0" y="0" width="257.4" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="128.7" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S1 收集并按调用序排列 VF</text>
+<rect x="347.4" y="0" width="364.5" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="529.6" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S2 依赖建模（别名+SSA+memref+闭包）</text>
+<rect x="801.9" y="0" width="173.7" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="888.8" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S3 打分与起始集</text>
+<rect x="347.4" y="120" width="345.6" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="520.2" y="158.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S4 贪心相邻合并循环（链式+图同步）</text>
+<rect x="801.9" y="120" width="348.3" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="976.0" y="158.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S5 tryMerge 合法性判定与 gap 搬迁</text>
+<rect x="0" y="274" width="377.1" height="65.0" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="188.6" y="302.0" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">S6 物化：mergeNoBetween / mergeNoMe</text>
+<text x="188.6" y="324.5" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">mory</text>
+<rect x="0" y="120" width="170" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="85.0" y="158.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">vfs 序列</text>
+<rect x="467.1" y="274" width="220.5" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="577.4" y="312.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">allDepsClosure 闭包</text>
+<rect x="467.1" y="394" width="204.3" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="569.2" y="432.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">VFDependencyGraph</text>
+<polyline points="257.4,32.0 347.4,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="711.9,32.0 801.9,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="975.6,32.0 1195.2,32.0 1195.2,229.0 756.9,229.0 756.9,152.0 693.0,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="693.0,152.0 801.9,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="706.5" y="126.0" width="82.0" height="23.2" fill="#fff"/>
+<text x="747.5" y="143.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">每对候选</text>
+<polyline points="1150.2,152.0 1195.2,152.0 1195.2,229.0 -45.0,229.0 -45.0,306.5 0.0,306.5" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="534.1" y="203.0" width="82.0" height="23.2" fill="#fff"/>
+<text x="575.1" y="220.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">闸门全过</text>
+<polyline points="1150.2,152.0 1195.2,152.0 1195.2,229.0 756.9,229.0 756.9,152.0 693.0,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="922.6" y="203.0" width="106.8" height="23.2" fill="#fff"/>
+<text x="976.0" y="220.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">拒绝→下一对</text>
+<polyline points="377.1,306.5 422.1,306.5 422.1,229.0 756.9,229.0 756.9,152.0 693.0,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="532.5" y="203.0" width="114.0" height="23.2" fill="#fff"/>
+<text x="589.5" y="220.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">合并结果续链</text>
+<polyline points="170.0,152.0 347.4,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="687.6,306.0 732.6,306.0 732.6,229.0 1195.2,229.0 1195.2,152.0 1150.2,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="671.4,426.0 732.6,426.0 732.6,229.0 756.9,229.0 756.9,152.0 693.0,152.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="377.1,306.5 467.1,306.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="348.7" y="280.2" width="146.8" height="23.2" fill="#fff"/>
+<text x="422.1" y="297.9" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">patchCalls 同步</text>
+<polyline points="377.1,306.5 467.1,426.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="348.7" y="340.2" width="146.8" height="23.2" fill="#fff"/>
+<text x="422.1" y="357.9" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">mergeNodes 同步</text>
+</svg>

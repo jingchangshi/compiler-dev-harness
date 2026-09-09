@@ -1166,3 +1166,58 @@ Agent 仍然独占全部语义工作(机制重构、mental model、bridges、sto
 - `scripts/test/orchestration.test.mjs`(25 tests):catalog(runtime+curated 发现、metadata、origin 区分、无持久索引、unreadable 可见)、resolver(exact id/name、normalized、canonical id、AMBIGUOUS、CREATE)、lifecycle(REUSE/REFRESH(HEAD drift、深度不足)/CREATE/BLOCKED)、composition 复用(集合变更强制重组)、DAG(single/multi/composition/presentation 依赖)、resume(partial → 只剩未完成节点)、idempotency(同请求两次无重复 bundle)、final gate(子未就绪/conflict/presentation hash 失配 → 拒绝 COMPLETE;全绿 → COMPLETE)、runtime store 清洁(正常 run 前后 harness `git status --porcelain` 不变 + 默认 runtime root gitignored)、renderer(derived/adaptive/确定性)、cross-origin(真实 curated 系统故事可复用)、anti-overfitting(generic orchestration 代码无 dogfood 专名)。
 - 全套 `node --test scripts/test/*.test.mjs`:263 tests,失败集合与实现前基线**完全一致**(8 个 Ripwire 环境失败,无新增 failure identity);`scripts/regression-cases.mjs` 无 drift。
 - 既有 low-level primitives(plan/validate/readiness/stale/compose-*)全部保留,orchestration 是其上的 control plane,不是替代。
+
+---
+
+## 21. Phase T5:Presentation Fidelity & Worked-Example Closure(2026-09-09 已实现)
+
+目标:一次真实 MergeVecScope presentation dogfood(渲染 HTML 中 10 处字面 `.footnote[...]`、4204×510/aspect≈10.1 的单行闸门树、`·` 连接的伪列表、canonical example 只剩 summary)暴露的四类缺口,转化为 `protocol + deterministic implementation + deterministic validation + regression fixtures + real dogfood`。**producer/consumer 所有权边界不变**;producer 继续拥有机制、决策与 worked examples 的内容与 provenance,consumer 拥有全部几何与 QMD 形态。
+
+### 21.1 Quarto 内容语义契约(Workstream A)
+
+- `skills/compiler-architecture-presentation/references/quarto-content-semantics.md`:canonical forms——evidence footer 用 `::: footer` div(禁止 `.footnote[...]`,Pandoc 括号语法在 Reveal.js 中原样渲染)、并列项必须是一条一个 `- ` 的真列表(`·` 连接 ≥3 项的段落 = 伪列表)、columns/notes/diagram 引用/`##` 标题即 manifest 键。
+- 模板 slides.qmd 中性化(不再预设 pass 叙事)并示范 canonical forms;styles.scss 增加 `.reveal .footer` 样式。
+- `check_project.py` 新增确定性 QMD 检查:C1 禁 `.footnote[`(error);C2 `·` 伪列表判定(段落/列表项 ≥3 个 `·` = error,2 个 = warning;frontmatter/代码块/表格/footer 豁免)。
+
+### 21.2 图几何与确定性 QA(Workstream B)
+
+- `spec_to_diagram.py` 重写:盒子尺寸按 CJK 文本实测并按 `MAX_TEXT_WIDTH` 换行(修复固定 380px 列距 vs 渲染盒变宽的必然重叠);decision_tree/flowchart 单根、control_flow/data_flow/dependency_graph/architecture 多根 BFS 层级→列,列按 `MAX_BAND_WIDTH` 换行成带;REJECT 角色进专用列;pipeline 流式换行。此前 7 种合法 kind 静默落入 grid fallback,现在 comparison/before_after 双列、其余层级布局,grid 只剩兜底。
+- 边路由:相邻列直连;其余边走 node-free 通道(列间走廊 + 带间 gutter + 左缘 margin)的确定性 elbow(waypoints),跨带走左缘;wrap 连接不再斜穿下一行。`make_excalidraw_diagram.py` 渲染多行文本与 polyline 箭头。
+- 新增 `check_diagram_geometry.py`(canonical + 模板副本,测试钉住字节一致):G1 节点重叠、G2 边穿非锚定节点盒、G3 极端 aspect(fail>20/warn>6)、G4 1600×900 投影字号(fail<12px/warn<16px)、G5 标签行溢出盒子;纯几何判定,不评好坏。
+- `check_project.py` 在所有模式下对 `diagrams/*.excalidraw` 运行几何检查。
+
+### 21.3 Worked-example closure(Workstream C,protocol 保持 v1 的加性扩展)
+
+- dossier:`canonical_example.execution_trace`/`steps` 条目允许结构化 step(`{label?|action|description|state, result?, mechanism_stage?, evidence_refs?}`,旧 `{description}/{state}` 形态向后兼容);新增 `worked_examples[]`(`{title, provenance{kind,source}, steps[], result?}`)承载逐机制实例。
+- handoff 新增 `worked_examples[]`(`{id, title, summary, evidence_refs?}`)——deck 必须展示的实例的语义引用,id 为 manifest 映射键;preflight digest 透传 declarations + `worked_examples_full`。
+- 机械 readiness:presentation 深度 + example-required 类型时,canonical example 必须是 worked example(≥3 个有序 trace 步骤);standard 及以下保持 provenance-only。
+- `validate_manifest.py`:`consumed.worked_examples` 覆盖——handoff 声明的每个 id 必须映射到 slide(或 deferred 带 reason),slide 引用必须在 QMD 中;"missing example mapping" 从此是确定性失败。
+
+### 21.4 编排 final gate 接线
+
+`observedPresentationState` 在 hash 匹配 + CONSUMABLE 之上运行 deck 项目自带的 `scripts/check_project.py`(确定性:结构 + manifest 覆盖 + QMD 语义 + 几何):checker fail → 节点 pending 并附有界错误,Quietly COMPLETE 被拒绝;pass → done(checker: pass);无 checker 的旧 deck 兼容(unavailable)。run-status 节点输出增加 `checker` 字段。
+
+### 21.5 文件清单(Phase T5 增改)
+
+| 文件 | 内容 |
+|---|---|
+| `skills/…-presentation/references/quarto-content-semantics.md` | 新增:QMD canonical forms |
+| `skills/…-presentation/scripts/spec_to_diagram.py` | 重写:实测换行盒、带换行层级布局、reject 列、走廊/gutter 边路由 |
+| `skills/…-presentation/scripts/make_excalidraw_diagram.py` | 多行文本 + waypoint 箭头渲染 |
+| `skills/…-presentation/scripts/check_diagram_geometry.py`(+模板副本) | 新增:G1–G5 几何 QA |
+| `skills/…-presentation/assets/quarto-project-template/scripts/{check_project,validate_manifest}.py` | QMD 语义检查 + 几何接线;worked-example 覆盖 |
+| `skills/…-presentation/assets/quarto-project-template/{slides.qmd,styles.scss,diagrams/*}` | 中性 canonical 模板 + footer 样式 + 新引擎重生成图 |
+| `scripts/teaching-schema.mjs` | step 结构、worked_examples(dossier+handoff)、presentation worked-example floor |
+| `scripts/preflight-handoff.mjs` | digest 透传 worked_examples(+full steps) |
+| `compiler-orchestrate-driver.mjs` | final gate 运行 deck checker;renderer 渲染 steps/worked_examples |
+| `skills/code-explanation/{SKILL.md,references/teaching-artifact-guide.md}` | worked-example 字段手册与要求 |
+| `scripts/test/presentation-fidelity.test.mjs` | 新增 13 tests(布局/几何/回归/QMD/Workstream C) |
+| `scripts/test/fixtures/mergevecscope-failed-deck-visuals.json` | 失败 deck 的真实 visual specs(回归 fixture) |
+| `analysis/presentations/2026-09-09-merge-vec-scope-t5/` | 真实 dogfood deck(全部 QA 绿 + Quarto 渲染) |
+
+### 21.6 Dogfood 结论(详见 analysis/2026-09-09-phase-t5-presentation-fidelity.md)
+
+- **Producer 增量刷新**:runtime bundle `2026-09-09-merge-vec-scope-pass` 因 HEAD 漂移(无关 pass 修复)stale;分析过的 10 个源文件逐字节未变 → provenance 重录 + T5 worked-example top-up(WE-1 依赖建模/贪心/图同步推演,kind=test;WE-2 闸门链逐门推演,kind=reconstructed,步骤全部引用既有机制 stage 与账本事实)→ validate 0 errors、readiness READY、staleness false、preflight CONSUMABLE(digest 携带 worked_examples)。
+- **Consumer**:新 deck `merge-vec-scope-slides-t5` 13 页;5 张 must-have 视觉全部经新引擎生成并通过几何 QA(V4 由 4204×510/10.1 降为 ~1500×640/2.4,9/19 条边为路由 elbow,投影字号 ≥16px);manifest 11/11 storyline 覆盖(step 8 split 带 reason)+ 5/5 must-have + WE-1/WE-2 映射 + 30 个 evidence id;check_project exit 0。
+- **渲染对照**:旧 deck HTML 10 处字面 `.footnote[` → 新 deck 0 处、13 个渲染 footer div;`✘ 设计拒绝` 伪列表 → 真 `<li>`;worked examples 为 2 个 `<ol>` 步骤列表。四类失败在渲染产物中逐一验证关闭。
+- 全套测试 275 pass / 8 fail(与 T4 基线完全一致的 Ripwire 环境失败),`teaching-dogfood` generic-layer 扫描名单已扩至全部新增 generic 文件。

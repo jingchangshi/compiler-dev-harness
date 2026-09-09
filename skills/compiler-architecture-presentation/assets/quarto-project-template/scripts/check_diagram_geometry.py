@@ -187,8 +187,9 @@ def collect_targets(args):
     for raw in args.targets:
         p = Path(raw)
         if p.is_dir():
-            paths.extend(sorted(p.glob("*.excalidraw")))
-        elif p.suffix == ".excalidraw" or p.suffix == ".json":
+            found = sorted(p.glob("*.excalidraw")) or sorted(p.glob("diagrams/*.excalidraw"))
+            paths.extend(found)
+        elif p.suffix in (".excalidraw", ".json"):
             paths.append(p)
         else:
             print(f"ERROR: unsupported target {raw}", file=sys.stderr)
