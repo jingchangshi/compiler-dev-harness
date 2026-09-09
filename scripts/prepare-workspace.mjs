@@ -10,11 +10,17 @@
  * - `contracts/<Profile>/REPOSITORY_PROFILE.md` — harness-owned repository
  *   profile (retrieval policy, harness tool parameters, repo conventions the
  *   team does not track);
- * - `contracts/<Profile>/AGENTS.local.md` — host-local facts;
- * - `<target>/AGENTS.local.md` — generated, managed composition of the two
- *   harness sources, materialized by this script and excluded from the target
- *   repository via Git's per-repository `info/exclude` (never the team's
- *   tracked `.gitignore`).
+ * - `contracts/<Profile>/REPOSITORY_CONTRACT.md` (optional) — harness-carried
+ *   repository operating contract, used for target repositories whose team
+ *   does not track an upstream `AGENTS.md`; it travels inside the managed
+ *   overlay and is never materialized as `AGENTS.md`;
+ * - `contracts/hosts/<host-id>/AGENTS.local.md` (optional) — machine-level
+ *   facts shared by every profile on that server (selected by hostname or
+ *   `--host`, with `host.json` name aliases);
+ * - `contracts/<Profile>/hosts/<host-id>/AGENTS.local.md` — profile-specific
+ *   host facts (deltas on top of the shared machine layer);
+ * - `<target>/AGENTS.local.md` — generated, managed composition of the
+ *   harness sources (contract → profile → shared host → profile host),
  *
  * Materialization is a generated copy with a managed header carrying the
  * profile name and the SHA-256 of the composed body, so ownership is detected
@@ -64,8 +70,10 @@ const HARNESS_MARKER = 'compiler-dev-harness:managed-v1'
 const OVERLAY_DEPLOY_NAME = 'AGENTS.local.md'
 const TEAM_CONTRACT_NAME = 'AGENTS.md'
 const PROFILE_SOURCE_NAME = 'REPOSITORY_PROFILE.md'
+const CONTRACT_SOURCE_NAME = 'REPOSITORY_CONTRACT.md'
 const OVERLAY_SOURCE_NAME = 'AGENTS.local.md'
 const PROFILE_MANIFEST_NAME = 'profile.json'
+const SHARED_HOSTS_DIRNAME = 'hosts'
 const EXCLUDE_BEGIN = '# BEGIN compiler-dev-harness managed local instructions'
 const EXCLUDE_END = '# END compiler-dev-harness managed local instructions'
 
@@ -75,22 +83,35 @@ export function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-/** Deterministic composition: profile (repo policy) first, then host facts. */
+/**
+ * Deterministic composition: non-empty parts joined by a `---` rule. The
+ * caller fixes the order — repository contract (if carried) → repository
+ * profile → shared machine facts → profile host facts.
+ */
+export function composeOverlayParts(parts) {
+  const bodies = parts
+    .filter((part) => part != null && part.trim().length > 0)
+    .map((part) => part.trimEnd())
+  if (bodies.length === 0) return ''
+  return `${bodies.join('\n\n---\n\n')}\n`
+}
+
+/** Two-part convenience wrapper (profile first, then host facts). */
 export function composeOverlayBody(profileBody, localBody) {
-  return `${profileBody.trimEnd()}\n\n---\n\n${localBody.trimEnd()}\n`
+  return composeOverlayParts([profileBody, localBody])
 }
 
 export function renderManagedArtifact({
   profileName,
   harnessRoot,
   body,
-  overlaySourceLabel = `{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}}`,
+  sourcesLabel = `contracts/${profileName}/{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}}`,
 }) {
   const header = [
     `<!-- ${HARNESS_MARKER}`,
     `profile: ${profileName}`,
     `content-sha256: ${sha256Hex(body)}`,
-    `sources: contracts/${profileName}/${overlaySourceLabel} + REPOSITORY_PROFILE.md in compiler-dev-harness (${harnessRoot})`,
+    `sources: ${sourcesLabel} in compiler-dev-harness (${harnessRoot})`,
     `regenerate: node ${join(harnessRoot, 'scripts', 'prepare-workspace.mjs')} <target-root>`,
     `-->`,
   ].join('\n')
@@ -232,14 +253,52 @@ export function applyExcludeEntry(content) {
 }
 
 /**
- * Resolve the host-local facts source for a profile. Two layouts:
- * - per-host: `contracts/<Profile>/hosts/<id>/AGENTS.local.md` (+ optional
- *   `host.json` with `host` id and `hostnames` aliases) — selected by explicit
- *   `--host`, else by the current `os.hostname()`;
- * - legacy: profile-level `AGENTS.local.md` (single-host, kept for older
- *   layouts). Both layouts at once is an error: one source of truth.
+ * Read the host entries declared in one `hosts/` directory (either the shared
+ * machine layer `contracts/hosts/` or a profile delta `contracts/<Profile>/
+ * hosts/`). A subdirectory counts only if it carries an `AGENTS.local.md`;
+ * `host.json` (optional) declares the host id and hostname aliases.
  */
-export function resolveHostSource(profile, { explicitHost = null, hostname = '' } = {}) {
+export function readHostEntries(hostsDir) {
+  const entries = []
+  if (!existsSync(hostsDir)) return entries
+  for (const entry of readdirSync(hostsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const hostPath = join(hostsDir, entry.name, OVERLAY_SOURCE_NAME)
+    if (!existsSync(hostPath)) continue
+    let manifest = null
+    const manifestPath = join(hostsDir, entry.name, 'host.json')
+    if (existsSync(manifestPath)) {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    }
+    entries.push({
+      hostId: manifest?.host ?? entry.name,
+      hostnames: (manifest?.hostnames ?? [manifest?.host ?? entry.name]).map(String),
+      hostPath,
+    })
+  }
+  return entries
+}
+
+/** Shared machine-level host facts: `contracts/hosts/<id>/AGENTS.local.md`. */
+export function discoverSharedHosts(harnessRoot) {
+  return readHostEntries(join(harnessRoot, 'contracts', SHARED_HOSTS_DIRNAME))
+}
+
+/**
+ * Resolve the host facts sources for a profile across two layers:
+ * - shared machine layer: `contracts/hosts/<id>/AGENTS.local.md` — facts true
+ *   for every repository on that server;
+ * - profile delta: `contracts/<Profile>/hosts/<id>/AGENTS.local.md` — facts
+ *   scoped to this repository's workflow on that server.
+ * The host id is selected by explicit `--host`, else by the current
+ * `os.hostname()` matched against the union of both layers' hostnames; a
+ * match may be shared-only, delta-only, or both (all are valid). A legacy
+ * profile-level `AGENTS.local.md` still works for single-host layouts and is
+ * self-contained (both it and a `hosts/` layer at once is an error).
+ * Neither layer matching, or a selected host with no facts at all, is a
+ * bounded failure — never a guess.
+ */
+export function resolveHostSource(profile, { explicitHost = null, hostname = '', harnessRoot = null } = {}) {
   const hostsDir = join(profile.dir, 'hosts')
   const legacyPath = join(profile.dir, OVERLAY_SOURCE_NAME)
   const hostsExist = existsSync(hostsDir)
@@ -251,55 +310,81 @@ export function resolveHostSource(profile, { explicitHost = null, hostname = '' 
       detail: `both ${hostsDir} and profile-level ${legacyPath} exist; keep exactly one source of host facts`,
     }
   }
-  if (!hostsExist) {
-    if (!legacyExists) {
-      return {
-        ok: false,
-        kind: 'harness-layout',
-        detail: `no host facts source: expected ${hostsDir} or ${legacyPath}`,
-      }
+  if (legacyExists) {
+    return {
+      ok: true,
+      legacy: true,
+      hostId: null,
+      hostPath: legacyPath,
+      sharedPath: null,
+      deltaPath: null,
+      matchedBy: 'profile-level (single host)',
     }
-    return { ok: true, legacy: true, hostId: null, hostPath: legacyPath, matchedBy: 'profile-level (single host)' }
   }
-  const hosts = []
-  for (const entry of readdirSync(hostsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const hostPath = join(hostsDir, entry.name, OVERLAY_SOURCE_NAME)
-    if (!existsSync(hostPath)) continue
-    let manifest = null
-    const manifestPath = join(hostsDir, entry.name, 'host.json')
-    if (existsSync(manifestPath)) {
-      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-    }
-    hosts.push({
-      hostId: manifest?.host ?? entry.name,
-      hostnames: (manifest?.hostnames ?? [manifest?.host ?? entry.name]).map(String),
-      hostPath,
-    })
-  }
-  if (explicitHost != null) {
-    const hit = hosts.find((h) => h.hostId === explicitHost)
-    return hit
-      ? { ok: true, legacy: false, ...hit, matchedBy: 'explicit' }
-      : {
-          ok: false,
-          kind: 'unknown-host',
-          detail: `--host ${explicitHost} matches no host source under ${hostsDir} (available: ${hosts.map((h) => h.hostId).join(', ') || 'none'}); create one from contracts/HOST_FACTS_TEMPLATE.md or pass an existing id`,
-        }
-  }
-  const byName = hosts.filter((h) => h.hostnames.includes(hostname))
-  if (byName.length === 1) return { ok: true, legacy: false, ...byName[0], matchedBy: 'hostname' }
-  if (byName.length > 1) {
+  const sharedHosts = harnessRoot ? discoverSharedHosts(harnessRoot) : []
+  const deltaHosts = readHostEntries(hostsDir)
+  if (!hostsExist && sharedHosts.length === 0) {
     return {
       ok: false,
-      kind: 'ambiguous-host',
-      detail: `hostname "${hostname}" matches several host sources: ${byName.map((h) => h.hostId).join(', ')}; pass --host`,
+      kind: 'harness-layout',
+      detail: `no host facts source: expected ${hostsDir}, ${join(harnessRoot ?? '', 'contracts', SHARED_HOSTS_DIRNAME)} entries, or ${legacyPath}`,
     }
   }
+
+  // Union both layers keyed by host id; a delta for an id that also exists in
+  // the shared layer inherits and extends its hostname aliases.
+  const byId = new Map()
+  for (const shared of sharedHosts) {
+    byId.set(shared.hostId, { hostId: shared.hostId, shared, delta: null, hostnames: [...shared.hostnames] })
+  }
+  for (const delta of deltaHosts) {
+    const current = byId.get(delta.hostId)
+    if (current) {
+      current.delta = delta
+      current.hostnames = [...new Set([...current.hostnames, ...delta.hostnames])]
+    } else {
+      byId.set(delta.hostId, { hostId: delta.hostId, shared: null, delta, hostnames: [...delta.hostnames] })
+    }
+  }
+
+  const pick = (predicate, matchedBy) => {
+    const hits = [...byId.values()].filter(predicate)
+    if (hits.length === 1) {
+      const hit = hits[0]
+      return {
+        ok: true,
+        legacy: false,
+        hostId: hit.hostId,
+        sharedPath: hit.shared?.hostPath ?? null,
+        deltaPath: hit.delta?.hostPath ?? null,
+        matchedBy,
+      }
+    }
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        kind: 'ambiguous-host',
+        detail: `hostname "${hostname}" matches several host sources: ${hits.map((h) => h.hostId).join(', ')}; pass --host`,
+      }
+    }
+    return null
+  }
+
+  if (explicitHost != null) {
+    const picked = pick((hit) => hit.hostId === explicitHost, 'explicit')
+    if (picked) return picked
+    return {
+      ok: false,
+      kind: 'unknown-host',
+      detail: `--host ${explicitHost} matches no host source (available: ${[...byId.keys()].join(', ') || 'none'}); create one from contracts/HOST_FACTS_TEMPLATE.md or pass an existing id`,
+    }
+  }
+  const byName = pick((hit) => hit.hostnames.includes(hostname), 'hostname')
+  if (byName) return byName
   return {
     ok: false,
     kind: 'no-host-match',
-    detail: `hostname "${hostname}" matches no host source under ${hostsDir} (available: ${hosts.map((h) => h.hostId).join(', ') || 'none'}); new server: copy contracts/HOST_FACTS_TEMPLATE.md to ${hostsDir}/<id>/AGENTS.local.md, fill every REQUIRED: line, add host.json listing its hostnames, or pass --host <id>`,
+    detail: `hostname "${hostname}" matches no host source (available: ${[...byId.keys()].join(', ') || 'none'}); new server: copy contracts/HOST_FACTS_TEMPLATE.md to contracts/hosts/<id>/AGENTS.local.md (shared machine facts), and to contracts/${profile.name}/hosts/<id>/AGENTS.local.md when this profile needs host-specific facts, add host.json listing its hostnames, or pass --host <id>`,
   }
 }
 
@@ -393,25 +478,63 @@ function readOverlayState(root) {
   return { state: 'present', deployPath, existing: readFileSync(deployPath, 'utf8') }
 }
 
+/** Refusal notice appended when only the shared machine layer exists. */
+export function renderMissingDeltaNotice(profileName, hostId) {
+  return [
+    '---',
+    '',
+    `> Profile-specific host facts for \`${profileName}\` on host \`${hostId}\` are not recorded yet.`,
+    `> Add \`contracts/${profileName}/hosts/${hostId}/AGENTS.local.md\` (see`,
+    '> `contracts/HOST_FACTS_TEMPLATE.md`). Until then, ask the user for host-specific',
+    '> toolchain and environment facts instead of assuming them.',
+    '',
+  ].join('\n')
+}
+
+/**
+ * Load every overlay source part in deployment order: repository contract
+ * (if the profile carries one) → repository profile → shared machine facts →
+ * profile host facts. Host bodies are validated against template
+ * placeholders; the managed header label names the exact contributing files.
+ */
 function loadOverlaySources(profile, hostSelection) {
-  const profileBody = readFileSync(join(profile.dir, PROFILE_SOURCE_NAME), 'utf8')
-  const hostBody = readFileSync(hostSelection.hostPath, 'utf8')
-  const facts = validateHostFacts(hostBody)
-  if (!facts.ok) {
-    return {
-      error: {
-        kind: 'host-facts-incomplete',
-        detail: `${hostSelection.hostPath} still contains template placeholders at lines ${facts.missing.map((m) => m.line).join(', ')} — fill every REQUIRED: line (a value or NONE) before materializing`,
-      },
+  const parts = []
+  const labelParts = []
+  const contractPath = join(profile.dir, CONTRACT_SOURCE_NAME)
+  if (existsSync(contractPath)) {
+    parts.push(readFileSync(contractPath, 'utf8'))
+    labelParts.push(`contracts/${profile.name}/${CONTRACT_SOURCE_NAME}`)
+  }
+  parts.push(readFileSync(join(profile.dir, PROFILE_SOURCE_NAME), 'utf8'))
+  labelParts.push(`contracts/${profile.name}/${PROFILE_SOURCE_NAME}`)
+
+  const hostLayers = []
+  if (hostSelection.legacy) {
+    hostLayers.push({ path: hostSelection.hostPath, tag: 'profile-level host facts' })
+  } else {
+    if (hostSelection.sharedPath != null) hostLayers.push({ path: hostSelection.sharedPath, tag: 'shared machine facts' })
+    if (hostSelection.deltaPath != null) hostLayers.push({ path: hostSelection.deltaPath, tag: 'profile host facts' })
+  }
+  for (const layer of hostLayers) {
+    const hostBody = readFileSync(layer.path, 'utf8')
+    const facts = validateHostFacts(hostBody)
+    if (!facts.ok) {
+      return {
+        error: {
+          kind: 'host-facts-incomplete',
+          detail: `${layer.path} still contains template placeholders at lines ${facts.missing.map((m) => m.line).join(', ')} — fill every REQUIRED: line (a value or NONE) before materializing`,
+        },
+      }
     }
+    parts.push(hostBody)
+    labelParts.push(`${layer.path.replace(/^.*contracts\//, 'contracts/')} (${layer.tag})`)
   }
-  return {
-    profileBody,
-    hostBody,
-    overlaySourceLabel: hostSelection.legacy
-      ? `{${PROFILE_SOURCE_NAME},${OVERLAY_SOURCE_NAME}}`
-      : `hosts/${hostSelection.hostId}/${OVERLAY_SOURCE_NAME}`,
+
+  let body = composeOverlayParts(parts)
+  if (!hostSelection.legacy && hostSelection.sharedPath != null && hostSelection.deltaPath == null) {
+    body += renderMissingDeltaNotice(profile.name, hostSelection.hostId)
   }
+  return { body, sourcesLabel: labelParts.join(' + ') }
 }
 
 function exclusionState(root) {
@@ -471,11 +594,28 @@ export function prepareWorkspace(options) {
   const hostSelection = resolveHostSource(profile, {
     explicitHost,
     hostname: osHostname(),
+    harnessRoot,
   })
   if (!hostSelection.ok) return fail(2, hostSelection.kind, hostSelection.detail)
   lines.push(
-    `host facts:      ${hostSelection.legacy ? 'profile-level source (single host)' : `${hostSelection.hostId} (matched by ${hostSelection.matchedBy})`}`,
+    `host facts:      ${
+      hostSelection.legacy
+        ? 'profile-level source (single host)'
+        : `${hostSelection.hostId} (matched by ${hostSelection.matchedBy})`
+    }`,
   )
+  if (!hostSelection.legacy) {
+    lines.push(
+      `host layers:     ${
+        [
+          hostSelection.sharedPath != null ? 'shared machine facts' : null,
+          hostSelection.deltaPath != null ? 'profile host facts' : null,
+        ]
+          .filter(Boolean)
+          .join(' + ') || 'none'
+      }`,
+    )
+  }
 
   let sources
   try {
@@ -484,12 +624,12 @@ export function prepareWorkspace(options) {
     return fail(2, 'harness-layout', `profile sources missing under ${profile.dir}: ${String(error.message ?? error)}`)
   }
   if (sources.error) return fail(1, sources.error.kind, sources.error.detail)
-  const desiredBody = composeOverlayBody(sources.profileBody, sources.hostBody)
+  const desiredBody = sources.body
   const desiredArtifact = renderManagedArtifact({
     profileName: profile.name,
     harnessRoot,
     body: desiredBody,
-    overlaySourceLabel: sources.overlaySourceLabel,
+    sourcesLabel: sources.sourcesLabel,
   })
 
   // Classify before ANY mutation: conflicts must leave the worktree untouched.
@@ -518,10 +658,16 @@ export function prepareWorkspace(options) {
 
   const conflictKinds = { unmanaged: true, 'foreign-profile': true, 'hand-edited': true }
   if (conflictKinds[classification]) {
+    const hostSourceHint = hostSelection.legacy
+      ? `contracts/${profile.name}/${OVERLAY_SOURCE_NAME}`
+      : (hostSelection.deltaPath ?? hostSelection.sharedPath ?? `${profile.dir}/${OVERLAY_SOURCE_NAME}`).replace(
+          /^.*contracts\//,
+          'contracts/',
+        )
     const guidance = {
       unmanaged: [
         'an unmanaged AGENTS.local.md already exists; the harness never overwrites it silently',
-        `to adopt harness management: move its unique content into contracts/${profile.name}/${OVERLAY_SOURCE_NAME} (harness source), delete the target file, then re-run prepare`,
+        `to adopt harness management: move its unique content into ${hostSourceHint} (harness source), delete the target file, then re-run prepare`,
       ],
       'foreign-profile': [
         'the existing file is a managed artifact of a different profile; refusing to replace it',
@@ -529,7 +675,7 @@ export function prepareWorkspace(options) {
       ],
       'hand-edited': [
         'the managed artifact was modified after materialization (content digest mismatch); refusing to discard the edit',
-        `re-apply the edit to contracts/${profile.name}/${OVERLAY_SOURCE_NAME} if it should persist, delete the target file, then re-run prepare`,
+        `re-apply the edit to ${hostSourceHint} if it should persist, delete the target file, then re-run prepare`,
       ],
     }[classification]
     lines.push(`overlay:         ${classification} (${overlay.deployPath})`)

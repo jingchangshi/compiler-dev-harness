@@ -1,0 +1,7 @@
+{
+  "profile": "TritonDistributed-Ascend-Dev",
+  "match": {
+    "remoteSubstrings": ["Triton-distributed-ascend"],
+    "basenames": ["Triton-distributed-ascend"]
+  }
+}

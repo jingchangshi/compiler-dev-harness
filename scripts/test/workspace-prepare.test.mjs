@@ -37,9 +37,13 @@ import {
   buildExcludeBlock,
   classifyOverlay,
   composeOverlayBody,
+  composeOverlayParts,
   discoverProfiles,
+  discoverSharedHosts,
   parseManagedArtifact,
   renderManagedArtifact,
+  renderMissingDeltaNotice,
+  resolveHostSource,
   selectProfile,
   sha256Hex,
 } from '../prepare-workspace.mjs'
@@ -47,7 +51,7 @@ import {
 const SCRIPT = resolve(new URL('../prepare-workspace.mjs', import.meta.url).pathname)
 const GIT_IDENTITY = ['-c', 'user.email=test@example.com', '-c', 'user.name=test', '-c', 'commit.gpgsign=false']
 
-function makeHarnessFixture({ hosts = null } = {}) {
+function makeHarnessFixture({ hosts = null, sharedHosts = null, contract = false, omitLegacy = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wsprep-harness-'))
   const dir = join(root, 'contracts', 'FixProfile')
   mkdirSync(dir, { recursive: true })
@@ -59,8 +63,30 @@ function makeHarnessFixture({ hosts = null } = {}) {
     join(dir, 'REPOSITORY_PROFILE.md'),
     '# Fix Repository Profile (harness-owned)\n\nexclude_dirs: fixture-x\n',
   )
+  if (contract) {
+    writeFileSync(
+      join(dir, 'REPOSITORY_CONTRACT.md'),
+      '# Fix Repository Contract (harness-carried)\n\nCanonical build: fixture-build-cmd\n',
+    )
+  }
+  if (sharedHosts != null) {
+    const sharedDir = join(root, 'contracts', 'hosts', sharedHosts.hostId)
+    mkdirSync(sharedDir, { recursive: true })
+    writeFileSync(
+      join(sharedDir, 'AGENTS.local.md'),
+      sharedHosts.incomplete
+        ? '# Shared Host Facts\n\nCANN: REQUIRED: fill me\n'
+        : '# Shared Host Facts\n\naccelerator: fix-device\n',
+    )
+    writeFileSync(
+      join(sharedDir, 'host.json'),
+      JSON.stringify({ host: sharedHosts.hostId, hostnames: sharedHosts.hostnames }),
+    )
+  }
   if (hosts == null) {
-    writeFileSync(join(dir, 'AGENTS.local.md'), '# Fix Local Host Facts\n\nconda: fix-env\n')
+    if (!omitLegacy) {
+      writeFileSync(join(dir, 'AGENTS.local.md'), '# Fix Local Host Facts\n\nconda: fix-env\n')
+    }
   } else {
     const hostDir = join(dir, 'hosts', hosts.hostId)
     mkdirSync(hostDir, { recursive: true })
@@ -114,6 +140,67 @@ test('composeOverlayBody joins profile then local facts deterministically', () =
   const body = composeOverlayBody('Profile\n', 'Local\n')
   assert.equal(body, 'Profile\n\n---\n\nLocal\n')
   assert.equal(composeOverlayBody('A', 'B'), composeOverlayBody('A\n\n', 'B  \n\n'))
+})
+
+test('composeOverlayParts joins non-empty parts in order and drops empty ones', () => {
+  assert.equal(
+    composeOverlayParts(['Contract\n', 'Profile\n', 'Shared\n', 'Delta\n']),
+    'Contract\n\n---\n\nProfile\n\n---\n\nShared\n\n---\n\nDelta\n',
+  )
+  assert.equal(composeOverlayParts([null, 'P', '', '  \n', 'D\n']), composeOverlayBody('P', 'D'))
+  assert.equal(composeOverlayParts([]), '')
+})
+
+test('discoverSharedHosts reads the shared machine layer with hostname aliases', () => {
+  const harnessRoot = makeHarnessFixture({ sharedHosts: { hostId: 'BoxA', hostnames: ['a1', 'a2'] } })
+  const shared = discoverSharedHosts(harnessRoot)
+  assert.equal(shared.length, 1)
+  assert.equal(shared[0].hostId, 'BoxA')
+  assert.deepEqual(shared[0].hostnames, ['a1', 'a2'])
+  assert.match(shared[0].hostPath, /contracts\/hosts\/BoxA\/AGENTS\.local\.md$/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+})
+
+test('resolveHostSource composes shared and profile-delta layers by host id', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'FixHost', hostnames: ['fix-box'] },
+    hosts: { hostId: 'FixHost', hostnames: ['fix-box'] },
+  })
+  const profile = { name: 'FixProfile', dir: join(harnessRoot, 'contracts', 'FixProfile') }
+  const both = resolveHostSource(profile, { hostname: 'fix-box', harnessRoot })
+  assert.equal(both.ok, true)
+  assert.equal(both.hostId, 'FixHost')
+  assert.match(both.sharedPath, /contracts\/hosts\/FixHost\/AGENTS\.local\.md$/)
+  assert.match(both.deltaPath, /contracts\/FixProfile\/hosts\/FixHost\/AGENTS\.local\.md$/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+
+  // A delta-only host (no shared entry) and a shared-only host are both valid.
+  const deltaOnlyRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'OtherBox', hostnames: ['other'] },
+    hosts: { hostId: 'FixHost', hostnames: ['fix-box'] },
+  })
+  const deltaProfile = { name: 'FixProfile', dir: join(deltaOnlyRoot, 'contracts', 'FixProfile') }
+  const deltaOnly = resolveHostSource(deltaProfile, { explicitHost: 'FixHost', harnessRoot: deltaOnlyRoot })
+  assert.equal(deltaOnly.ok, true)
+  assert.equal(deltaOnly.sharedPath, null)
+  assert.match(deltaOnly.deltaPath, /contracts\/FixProfile\/hosts\/FixHost\/AGENTS\.local\.md$/)
+  const sharedOnly = resolveHostSource(deltaProfile, { explicitHost: 'OtherBox', harnessRoot: deltaOnlyRoot })
+  assert.equal(sharedOnly.ok, true)
+  assert.match(sharedOnly.sharedPath, /contracts\/hosts\/OtherBox\/AGENTS\.local\.md$/)
+  assert.equal(sharedOnly.deltaPath, null)
+  rmSync(deltaOnlyRoot, { recursive: true, force: true })
+})
+
+test('resolveHostSource: a hostname matching two host ids is ambiguous, never a guess', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'BoxA', hostnames: ['dupe-box'] },
+    hosts: { hostId: 'BoxB', hostnames: ['dupe-box'] },
+  })
+  const profile = { name: 'FixProfile', dir: join(harnessRoot, 'contracts', 'FixProfile') }
+  const result = resolveHostSource(profile, { hostname: 'dupe-box', harnessRoot })
+  assert.equal(result.ok, false)
+  assert.equal(result.kind, 'ambiguous-host')
+  rmSync(harnessRoot, { recursive: true, force: true })
 })
 
 test('managed artifact round-trips and detects tampering', () => {
@@ -446,6 +533,84 @@ test('profile-level and hosts/ sources at once is an error, never a silent pick'
   assert.equal(result.status, 2)
   assert.match(result.stderr, /ambiguous-host-source/)
   assert.match(result.stderr, /exactly one source/)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('shared + delta + carried contract: composition order and provenance header', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'FixHost', hostnames: [hostname()] },
+    hosts: { hostId: 'FixHost' },
+    contract: true,
+  })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /host facts:      FixHost \(matched by hostname\)/)
+  assert.match(result.stdout, /host layers:     shared machine facts \+ profile host facts/)
+  const overlay = readFileSync(join(target, 'AGENTS.local.md'), 'utf8')
+  const contractAt = overlay.indexOf('Fix Repository Contract (harness-carried)')
+  const profileAt = overlay.indexOf('Fix Repository Profile (harness-owned)')
+  const sharedAt = overlay.indexOf('Shared Host Facts')
+  const deltaAt = overlay.indexOf('Fix Local Host Facts')
+  assert.ok(contractAt !== -1 && profileAt !== -1 && sharedAt !== -1 && deltaAt !== -1)
+  assert.ok(contractAt < profileAt && profileAt < sharedAt && sharedAt < deltaAt, 'contract → profile → shared → delta order')
+  assert.match(overlay, /Canonical build: fixture-build-cmd/)
+  assert.match(overlay, /sources: contracts\/FixProfile\/REPOSITORY_CONTRACT\.md \+ contracts\/FixProfile\/REPOSITORY_PROFILE\.md \+ contracts\/hosts\/FixHost\/AGENTS\.local\.md/)
+  assert.match(overlay, /contracts\/FixProfile\/hosts\/FixHost\/AGENTS\.local\.md \(profile host facts\)/)
+  assert.doesNotMatch(overlay, /not recorded yet/, 'no missing-delta notice when the delta exists')
+  assert.equal(sh('git', ['status', '--short'], target), '')
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('shared-only host: materializes shared facts plus the missing-delta notice', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'FixHost', hostnames: [hostname()] },
+    contract: true,
+    omitLegacy: true,
+  })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /host layers:     shared machine facts/)
+  const overlay = readFileSync(join(target, 'AGENTS.local.md'), 'utf8')
+  assert.match(overlay, /Shared Host Facts/)
+  assert.match(overlay, /not recorded yet/)
+  assert.match(overlay, /contracts\/FixProfile\/hosts\/FixHost\/AGENTS\.local\.md/)
+  assert.match(overlay, /ask the user for host-specific/)
+  assert.equal(renderMissingDeltaNotice('X', 'Y').includes('contracts/X/hosts/Y/AGENTS.local.md'), true)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('incomplete shared host facts (REQUIRED:) are refused before materializing', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'FixHost', hostnames: [hostname()], incomplete: true },
+    omitLegacy: true,
+  })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /host-facts-incomplete/)
+  assert.match(result.stderr, /contracts\/hosts\/FixHost\/AGENTS\.local\.md/)
+  assert.match(result.stderr, /REQUIRED: line/)
+  assert.equal(exists(join(target, 'AGENTS.local.md')), false)
+  rmSync(harnessRoot, { recursive: true, force: true })
+  rmSync(target, { recursive: true, force: true })
+})
+
+test('a hostname shared by no layer fails bounded with two-layer onboarding guidance', () => {
+  const harnessRoot = makeHarnessFixture({
+    sharedHosts: { hostId: 'FixHost', hostnames: ['other-box'] },
+    omitLegacy: true,
+  })
+  const target = initTargetRepo()
+  const result = runCli(['--harness-root', harnessRoot, target])
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /matches no host source/)
+  assert.match(result.stderr, /contracts\/hosts\/<id>\/AGENTS\.local\.md \(shared machine facts\)/)
+  assert.equal(exists(join(target, 'AGENTS.local.md')), false)
   rmSync(harnessRoot, { recursive: true, force: true })
   rmSync(target, { recursive: true, force: true })
 })
