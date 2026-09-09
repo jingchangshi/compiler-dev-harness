@@ -35,6 +35,24 @@ function sha256File(path) {
 function buildDigest(bundle) {
   const h = bundle.handoff || {}
   const d = bundle.dossier || {}
+  // Phase T6: surface the semantic visual contract fields so the presentation
+  // consumer sees what each visual claims and which state relations it carries
+  // without re-reading the raw artifacts. Geometry never appears here.
+  const semanticVisual = (v) => {
+    const stages = new Set()
+    for (const n of v.nodes || []) for (const s of n.mechanism_stages || []) stages.add(s)
+    const stateEdges = (v.edges || []).filter((e) => e.domain === 'state').length
+    const controlKinds = [...new Set((v.edges || []).filter((e) => (e.domain ?? 'control') === 'control' && e.kind).map((e) => e.kind))]
+    return {
+      id: v.id, kind: v.kind, title: v.title,
+      nodes: (v.nodes || []).length, edges: (v.edges || []).length,
+      ordering: v.ordering || [],
+      covers: v.covers || [],
+      stages_mapped: [...stages],
+      state_edges: stateEdges,
+      control_kinds: controlKinds,
+    }
+  }
   return {
     subject_id: h.subject_id || d.subject_id,
     subject_type: h.subject_type || d.subject_type,
@@ -45,7 +63,7 @@ function buildDigest(bundle) {
       dossier_section: s.dossier_section,
       evidence_refs: s.evidence_refs || [],
     })),
-    visuals: (h.visuals || []).map((v) => ({ id: v.id, kind: v.kind, title: v.title, nodes: (v.nodes || []).length, edges: (v.edges || []).length, ordering: v.ordering || [] })),
+    visuals: (h.visuals || []).map(semanticVisual),
     must_have_visuals: h.must_have_visuals || [],
     optional_visuals: h.optional_visuals || [],
     canonical_example: h.canonical_example || (d.canonical_example ? { summary: 'see dossier.canonical_example', provenance: d.canonical_example.provenance } : undefined),
@@ -67,6 +85,12 @@ function buildDigest(bundle) {
     dossier_pointers: {
       mental_model: d.mental_model,
       mechanism_stages: (d.mechanism?.stages || []).map((s) => ({ name: s.name, where: s.where })),
+      // Phase T6: the state lifecycle model the deck must not contradict.
+      mechanism_states: (d.mechanism?.states || []).map((s) => ({
+        id: s.id, name: s.name, kind: s.kind,
+        created_in: s.created_in, read_in: s.read_in || [], updated_in: s.updated_in || [],
+        finalized_in: s.finalized_in,
+      })),
       canonical_example_full: d.canonical_example,
       placement: d.placement,
       boundaries: d.boundaries,

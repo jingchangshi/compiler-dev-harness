@@ -130,6 +130,8 @@ test('dogfood B: state transitions are real (union-find) and the reconstructed e
 test('generic layer source contains no subject-specific concepts', () => {
   const genericSources = [
     join(repoRoot, 'scripts', 'teaching-schema.mjs'),
+    // T6 semantic visual fidelity: contract vocabularies + validator
+    join(repoRoot, 'scripts', 'check-visual-semantics.mjs'),
     // T3 composition layer: composition schema + compose driver
     join(repoRoot, 'scripts', 'composition-schema.mjs'),
     join(repoRoot, 'compiler-compose-driver.mjs'),
@@ -151,7 +153,7 @@ test('generic layer source contains no subject-specific concepts', () => {
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'check_diagram_geometry.py'),
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'SKILL.md'),
   ]
-  const banned = /MergeVecScope|AutoVectorizeV2|FlattenOps|RegBase|HFusion|HIVM|tryMerge|mergeLevel|bufferiz/i
+  const banned = /MergeVecScope|AutoVectorizeV2|FlattenOps|RegBase|HFusion|HIVM|tryMerge|mergeLevel|bufferiz|startVFs|VFDependencyGraph|allDepsClosure|mergeNoBetween|mergeNoMemory|useScoreMat|scoreIdx|toRemoveVFs|patchCalls/i
   for (const file of genericSources) {
     const source = readFileSync(file, 'utf8')
     assert.equal(banned.test(source), false, `${file} contains subject-specific content`)

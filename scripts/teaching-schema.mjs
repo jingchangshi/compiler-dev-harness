@@ -34,6 +34,15 @@ export const SCHEMA_VERSION = 1
 // append their own mechanical checks. Pure module, no I/O, no cycle
 // (composition-schema imports nothing).
 import { compositionChecks, makeEvidenceIdSpace, validateComposition } from './composition-schema.mjs'
+// Semantic visual fidelity (Phase T6): the protocol half of the semantic visual
+// contract (vocabularies + shape validation) and the readiness check that the
+// declared semantics are consumed. check-visual-semantics imports nothing from
+// this module, so the dependency stays one-directional.
+import {
+  checkVisualSemantics,
+  EDGE_DOMAINS, EDGE_KINDS_BY_DOMAIN,
+  STATE_KINDS, STAGE_DISPOSITIONS, VISUAL_COVERAGE,
+} from './check-visual-semantics.mjs'
 
 export const SUBJECT_TYPES = [
   'function', 'class', 'algorithm', 'pass', 'module', 'subsystem', 'pipeline',
@@ -301,6 +310,11 @@ export function validateProvenance(prov, errors, source, { requireComplete = fal
 const CONTEXT_ENTRY_KEYS = ['role', 'entity', 'interaction', 'evidence_refs']
 const CONTRACT_ENTRY_KEYS = ['name', 'form', 'description', 'evidence_refs']
 const STAGE_KEYS = ['name', 'what', 'where', 'key_functions', 'evidence_refs']
+// Phase T6 semantic visual contract (producer side): state entities carry the
+// lifecycle the presentation must not contradict; control relations are typed
+// stage→stage edges the deck must consume or explicitly defer.
+const STATE_KEYS = ['id', 'name', 'kind', 'created_in', 'read_in', 'updated_in', 'finalized_in', 'evidence_refs', 'note']
+const CONTROL_RELATION_KEYS = ['from', 'to', 'kind', 'condition', 'evidence_refs', 'note']
 const TRANSITION_KEYS = ['phase', 'before', 'operation', 'after', 'reason', 'evidence_refs']
 const DECISION_KEYS = ['id', 'question', 'condition', 'outcomes', 'reason', 'evidence_refs', 'example_refs']
 const CONSTRAINT_KEYS = ['statement', 'status', 'evidence_refs']
@@ -422,8 +436,46 @@ export function validateDossier(dossier, evidenceIds, errors, source = 'dossier'
       if (mech.data_flow !== undefined && !Array.isArray(mech.data_flow)) error(errors, `${source}.mechanism.data_flow`, 'must be an array when present')
       if (mech.mutable_state !== undefined && typeof mech.mutable_state !== 'boolean') error(errors, `${source}.mechanism.mutable_state`, 'must be a boolean when present')
       if (mech.has_important_branching !== undefined && typeof mech.has_important_branching !== 'boolean') error(errors, `${source}.mechanism.has_important_branching`, 'must be a boolean when present')
+      // Phase T6: state entities with declared lifecycles. Shape only here —
+      // stage-name resolution against mechanism.stages is the semantic
+      // validator's job (check-visual-semantics.mjs).
+      if (mech.states !== undefined) {
+        if (!Array.isArray(mech.states)) error(errors, `${source}.mechanism.states`, 'must be an array when present')
+        else mech.states.forEach((s, i) => {
+          const at = `${source}.mechanism.states[${i}]`
+          if (!isObject(s)) { error(errors, at, 'must be a mapping'); return }
+          for (const key of Object.keys(s).sort()) if (!STATE_KEYS.includes(key)) error(errors, at, `unknown field: ${key}`)
+          if (!isNonempty(s.id)) error(errors, `${at}.id`, 'must be a non-empty string')
+          if (!isNonempty(s.name)) error(errors, `${at}.name`, 'must be a non-empty string')
+          if (!STATE_KINDS.includes(s.kind)) error(errors, `${at}.kind`, `must be one of ${STATE_KINDS}`)
+          for (const field of ['created_in', 'finalized_in']) {
+            if (s[field] !== undefined && !isNonempty(s[field])) error(errors, `${at}.${field}`, 'must be a non-empty stage name when present')
+          }
+          for (const field of ['read_in', 'updated_in']) {
+            if (s[field] !== undefined && !isStringArray(s[field])) error(errors, `${at}.${field}`, 'must be an array of stage names when present')
+          }
+          if (s.evidence_refs === undefined || !isRefArray(s.evidence_refs) || s.evidence_refs.length === 0) {
+            error(errors, at, 'evidence_refs with at least one id is required — a state lifecycle without evidence is a claim, not a fact')
+          }
+        })
+      }
+      if (mech.control_relations !== undefined) {
+        if (!Array.isArray(mech.control_relations)) error(errors, `${source}.mechanism.control_relations`, 'must be an array when present')
+        else mech.control_relations.forEach((r, i) => {
+          const at = `${source}.mechanism.control_relations[${i}]`
+          if (!isObject(r)) { error(errors, at, 'must be a mapping'); return }
+          for (const key of Object.keys(r).sort()) if (!CONTROL_RELATION_KEYS.includes(key)) error(errors, at, `unknown field: ${key}`)
+          for (const field of ['from', 'to', 'kind']) {
+            if (!isNonempty(r[field])) error(errors, `${at}.${field}`, 'must be a non-empty string')
+          }
+          if (r.condition !== undefined && !isNonempty(r.condition)) error(errors, `${at}.condition`, 'must be a non-empty string when present')
+          if (r.evidence_refs === undefined || !isRefArray(r.evidence_refs) || r.evidence_refs.length === 0) {
+            error(errors, at, 'evidence_refs with at least one id is required — a control relation without evidence is a claim, not a fact')
+          }
+        })
+      }
       for (const key of Object.keys(mech).sort()) {
-        if (!['summary', 'stages', 'control_flow', 'data_flow', 'mutable_state', 'has_important_branching'].includes(key)) {
+        if (!['summary', 'stages', 'control_flow', 'data_flow', 'mutable_state', 'has_important_branching', 'states', 'control_relations'].includes(key)) {
           error(errors, `${source}.mechanism`, `unknown field: ${key}`)
         }
       }
@@ -620,6 +672,46 @@ export function validateDossier(dossier, evidenceIds, errors, source = 'dossier'
 // Presentation handoff
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Phase T6 semantic visual contract (consumer side). All fields are optional
+ * and additive — legacy visuals without them stay valid. Shape only: whether
+ * the declared stages/states/relations are actually consumed is the semantic
+ * validator's job (check-visual-semantics.mjs). */
+function validateVisualSemanticsFields(spec, errors, source) {
+  if (spec.covers !== undefined) {
+    if (!isStringArray(spec.covers)) error(errors, `${source}.covers`, 'must be an array of coverage claims when present')
+    else for (const c of spec.covers) {
+      if (!VISUAL_COVERAGE.includes(c)) error(errors, `${source}.covers`, `unknown coverage claim ${JSON.stringify(c)} (allowed: ${VISUAL_COVERAGE.join(', ')})`)
+    }
+  }
+  if (spec.stage_dispositions !== undefined) {
+    if (!Array.isArray(spec.stage_dispositions)) error(errors, `${source}.stage_dispositions`, 'must be an array when present')
+    else spec.stage_dispositions.forEach((d, i) => {
+      const at = `${source}.stage_dispositions[${i}]`
+      if (!isObject(d)) { error(errors, at, 'must be a mapping'); return }
+      for (const key of Object.keys(d).sort()) {
+        if (!['stage', 'disposition', 'reason', 'to_visual'].includes(key)) error(errors, at, `unknown field: ${key}`)
+      }
+      if (!isNonempty(d.stage)) error(errors, `${at}.stage`, 'must be a non-empty stage name')
+      if (!STAGE_DISPOSITIONS.includes(d.disposition)) error(errors, `${at}.disposition`, `must be one of ${STAGE_DISPOSITIONS}`)
+      if (!isNonempty(d.reason)) error(errors, `${at}.reason`, 'is required — a silent drop must never look like a disposition')
+      if (d.to_visual !== undefined && !isNonempty(d.to_visual)) error(errors, `${at}.to_visual`, 'must be a non-empty visual id when present')
+    })
+  }
+  if (spec.deferred_relations !== undefined) {
+    if (!Array.isArray(spec.deferred_relations)) error(errors, `${source}.deferred_relations`, 'must be an array when present')
+    else spec.deferred_relations.forEach((d, i) => {
+      const at = `${source}.deferred_relations[${i}]`
+      if (!isObject(d)) { error(errors, at, 'must be a mapping'); return }
+      for (const key of Object.keys(d).sort()) {
+        if (!['from', 'to', 'kind', 'reason'].includes(key)) error(errors, at, `unknown field: ${key}`)
+      }
+      for (const field of ['from', 'to', 'kind', 'reason']) {
+        if (!isNonempty(d[field])) error(errors, `${at}.${field}`, 'must be a non-empty string')
+      }
+    })
+  }
+}
+
 export function validateVisualSpec(spec, errors, source) {
   if (!isObject(spec)) { error(errors, source, 'must be a mapping'); return }
   for (const key of Object.keys(spec)) {
@@ -631,17 +723,39 @@ export function validateVisualSpec(spec, errors, source) {
     if (!Array.isArray(spec.nodes)) error(errors, `${source}.nodes`, 'must be an array when present')
     else spec.nodes.forEach((n, i) => {
       if (!isObject(n) || !isNonempty(n.id) || !isNonempty(n.label)) error(errors, `${source}.nodes[${i}]`, 'must be a mapping with non-empty id and label')
-      else for (const key of Object.keys(n)) if (FORBIDDEN_VISUAL_KEYS.includes(key)) error(errors, `${source}.nodes[${i}].${key}`, `layout/pixel/color key "${key}" is forbidden — visual specs are semantic only`)
+      else {
+        for (const key of Object.keys(n)) if (FORBIDDEN_VISUAL_KEYS.includes(key)) error(errors, `${source}.nodes[${i}].${key}`, `layout/pixel/color key "${key}" is forbidden — visual specs are semantic only`)
+        for (const field of ['mechanism_stages', 'state_refs']) {
+          if (n[field] !== undefined && !isStringArray(n[field])) error(errors, `${source}.nodes[${i}].${field}`, 'must be an array of non-empty strings when present')
+        }
+        for (const field of ['stage_merge_reason', 'state_merge_reason']) {
+          if (n[field] !== undefined && !isNonempty(n[field])) error(errors, `${source}.nodes[${i}].${field}`, 'must be a non-empty string when present')
+        }
+      }
     })
   }
   if (spec.edges !== undefined) {
     if (!Array.isArray(spec.edges)) error(errors, `${source}.edges`, 'must be an array when present')
     else spec.edges.forEach((e, i) => {
       if (!isObject(e) || !isNonempty(e.from) || !isNonempty(e.to)) error(errors, `${source}.edges[${i}]`, 'must be a mapping with non-empty from/to')
-      else for (const key of Object.keys(e)) if (FORBIDDEN_VISUAL_KEYS.includes(key)) error(errors, `${source}.edges[${i}].${key}`, `layout/pixel/color key "${key}" is forbidden — visual specs are semantic only`)
+      else {
+        for (const key of Object.keys(e)) if (FORBIDDEN_VISUAL_KEYS.includes(key)) error(errors, `${source}.edges[${i}].${key}`, `layout/pixel/color key "${key}" is forbidden — visual specs are semantic only`)
+        if (e.domain !== undefined && !EDGE_DOMAINS.includes(e.domain)) error(errors, `${source}.edges[${i}].domain`, `must be one of ${EDGE_DOMAINS} when present`)
+        if (e.kind !== undefined) {
+          if (!isNonempty(e.kind)) error(errors, `${source}.edges[${i}].kind`, 'must be a non-empty string when present')
+          else {
+            const domains = e.domain !== undefined ? [e.domain] : Object.keys(EDGE_KINDS_BY_DOMAIN)
+            if (!domains.some((d) => EDGE_KINDS_BY_DOMAIN[d].includes(e.kind))) {
+              error(errors, `${source}.edges[${i}].kind`, `${JSON.stringify(e.kind)} is not a valid ${e.domain !== undefined ? e.domain : ''} edge kind`)
+            }
+          }
+        }
+        if (e.states !== undefined && !isStringArray(e.states)) error(errors, `${source}.edges[${i}].states`, 'must be an array of state ids when present')
+      }
     })
   }
   if (spec.ordering !== undefined && !Array.isArray(spec.ordering)) error(errors, `${source}.ordering`, 'must be an array of ordering constraints when present')
+  validateVisualSemanticsFields(spec, errors, source)
 }
 
 export function validateHandoff(handoff, evidenceIds, errors, source = 'handoff') {
@@ -902,6 +1016,18 @@ export function computeMechanicalReadiness({ subject, evidence, dossier, handoff
     checks.push(check('handoff_takeaways', (handoff?.key_takeaways?.length || 0) > 0 ? 'pass' : 'fail', handoff?.key_takeaways?.length ? `${handoff.key_takeaways.length} takeaways` : 'handoff.key_takeaways missing'))
   } else if (handoff) {
     checks.push(check('handoff_optional', 'pass', 'handoff present at non-presentation depth'))
+  }
+
+  // Semantic visual fidelity (Phase T6): the semantics the producer declared
+  // (stage model, state lifecycles, control relations) must be consumed by the
+  // visuals, and no visual may contradict a declared lifecycle. Obligations
+  // bind to visual coverage claims, so legacy bundles without claims stay valid.
+  if (handoff) {
+    const sem = checkVisualSemantics({ dossier, handoff })
+    const detail = sem.verdict === 'pass'
+      ? `semantic visual contract ok${sem.warnings.length > 0 ? ` (${sem.warnings.length} warning${sem.warnings.length === 1 ? '' : 's'})` : ''}${sem.recommendations.length > 0 ? ` — ${sem.recommendations.length} SPLIT_RECOMMENDED` : ''}`
+      : sem.errors.slice(0, 5).map((e) => `${e.check}: ${e.detail}`).join('; ')
+    checks.push(check('visual_semantics', sem.verdict === 'pass' ? 'pass' : 'fail', detail))
   }
 
   // Composition-specific mechanical floor (Phase T3): only when the bundle

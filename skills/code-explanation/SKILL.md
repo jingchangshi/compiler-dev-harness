@@ -50,6 +50,11 @@ The separation is the product: a teaching layer that blurs fact and inference is
 
 Build the stage model from what the code does — `Acquire → Analyze → Decide → Transform → Update` shape only if the code has it. For each stage: what happens, where (`file:line`), key functions, and its evidence ids. Then set the two flags honestly — `mechanism.mutable_state` and `mechanism.has_important_branching` — they drive required checks (state transitions / decision model). Declare `control_flow` (who drives whom) and `data_flow` (what value moves where) separately when the subject is complex enough that a call graph alone would mislead.
 
+When the algorithm is stateful (worklists, live sequences, analysis states, IR mutation, accounting), also declare the structured semantic model (Phase T6) — prose narration is not machine-checkable:
+
+- `mechanism.states[]` — one entry per state entity: `id`, `name`, `kind` (`work_queue` | `live_sequence` | `analysis` | `derived` | `ir` | `accounting` | `other`), and its lifecycle as stage references: `created_in`, `read_in[]`, `updated_in[]`, `finalized_in?` — every field cited. The single most important distinction it encodes: a state built once during initialization and never mutated (`updated_in: []` — initialization-time derived state) is NOT the same kind of thing as persistent mutable analysis state, a scheduling work queue, or a live ordered collection; mislabeling that in a presentation is exactly the failure class T6's validator catches. Never infer lifecycles from memory — each field cites the lines that read or write the state.
+- `mechanism.control_relations[]` — typed stage→stage relations: `from`, `to`, `kind` (`next` | `success` | `failure` | `reject` | `skip` | `requeue` | `retry` | `loop` | `finalize`), optional `condition`, each cited. These are the relations a control-flow visual must consume or explicitly defer; a `loop`/`requeue`/`finalize` relation may loop back to its own stage (self-relation). Declare the relations the algorithm really has — under-declaring silently weakens the presentation contract, over-declaring fabricates control flow.
+
 ### 4. Write the teaching dossier
 
 Common core, filled only with what the subject actually has:
@@ -69,6 +74,8 @@ Then exactly one type extension under `extensions.<subject_type>` — pass field
 ### 5. Derive the presentation handoff (presentation depth)
 
 `storyline` is your reasoning output and must adapt to the subject (a function is told differently than a subsystem); 3+ steps, each with its claim and dossier section. `visuals` are semantic specs only: `kind` (`architecture|pipeline|control_flow|data_flow|flowchart|decision_tree|state_transition|sequence|before_after|comparison|dependency_graph|ownership`), nodes/edges/groups/roles/ordering — the validator rejects any layout, pixel, or color key. `must_have_visuals` reference defined visual ids. `evidence_index` is a bounded subset of the ledger, not a copy of everything.
+
+For stateful algorithms, make the mechanism visuals faithful by construction (Phase T6 semantic visual contract): each overview visual declares `covers` (mechanism / control_flow / state_lifecycle), nodes declare `mechanism_stages` / `state_refs` (aggregating several stages or state families requires an explicit `*_merge_reason`), and edges carry `domain` + `kind` (control: next/success/failure/reject/skip/requeue/retry/loop/finalize; state: create/read/update/finalize; data: flow/dependency). A stage you do not draw must carry a reasoned `stage_disposition` — silent drops fail the deterministic checker and make the bundle not consumable. Prefer splitting one overloaded figure into two related visuals (overview + state mutation) over compressing distinct semantic levels into fewer nodes; when the deck must show per-merge state mutation, add a worked example whose steps reference the real stage names and state transitions.
 
 ### 6. Gate readiness
 

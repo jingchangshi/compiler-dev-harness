@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1135 613" width="100%" height="100%">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>
+<rect x="458.1" y="0" width="328.5" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="622.4" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">call zero（%zero 是共同操作数）</text>
+<rect x="0" y="0" width="170" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="85.0" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">call producer</text>
+<rect x="0" y="120" width="170" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="85.0" y="158.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">call reduce_a</text>
+<rect x="0" y="240" width="170" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="85.0" y="278.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">call reduce_b</text>
+<rect x="0" y="360" width="328.5" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="164.2" y="398.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">组1：producer+zero（第1轮合并）</text>
+<rect x="0" y="480" width="368.1" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="184.1" y="518.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">组2：reduce_a+reduce_b（第2轮合并）</text>
+<rect x="876.6" y="0" width="234.0" height="64" rx="5" fill="#ffffff" stroke="#343a40" stroke-width="2"/>
+<text x="993.6" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">第三次错合并（不存在）</text>
+<polyline points="170.0,32.0 458.1,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="271.4" y="6.0" width="85.2" height="23.2" fill="#fff"/>
+<text x="314.1" y="23.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">同块 SSA</text>
+<polyline points="170.0,152.0 458.1,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="271.4" y="66.0" width="85.2" height="23.2" fill="#fff"/>
+<text x="314.1" y="83.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">同块 SSA</text>
+<polyline points="170.0,272.0 458.1,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="271.4" y="126.0" width="85.2" height="23.2" fill="#fff"/>
+<text x="314.1" y="143.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">同块 SSA</text>
+<polyline points="328.5,392.0 413.1,392.0 413.1,589.0 831.6,589.0 831.6,32.0 876.6,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="718.6" y="284.5" width="226.0" height="23.2" fill="#fff"/>
+<text x="831.6" y="302.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">若图未同步：陈旧边误判无关</text>
+<polyline points="368.1,512.0 413.1,512.0 413.1,589.0 831.6,589.0 831.6,32.0 876.6,32.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="697.8" y="284.5" width="267.6" height="23.2" fill="#fff"/>
+<text x="831.6" y="302.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">→ 图同步后无边，CHECK-NOT 断言</text>
+</svg>

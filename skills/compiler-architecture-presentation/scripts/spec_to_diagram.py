@@ -117,6 +117,27 @@ def label(node: dict) -> str:
     return node.get("label", node.get("id", ""))
 
 
+def node_color(node: dict) -> str:
+    """Presentation encoding of the Phase T6 semantic contract (consumer
+    decision, deterministic): nodes that depict producer-declared STATE
+    entities render amber so scheduling/live/analysis lanes read apart from
+    control-phase nodes, which render blue. Nodes without semantic fields
+    keep the neutral palette (legacy visuals are unchanged)."""
+    if node.get("state_refs") and not node.get("mechanism_stages"):
+        return "amber"
+    if node.get("mechanism_stages"):
+        return "blue"
+    return "neutral"
+
+
+def edge_style(edge: dict) -> dict:
+    """Presentation encoding of edge semantics: state-domain edges (state
+    read/update/create/finalize) are NOT control flow and render dashed;
+    explicit per-edge `dashed` still wins. No other kind changes geometry."""
+    dashed = bool(edge.get("dashed", False)) or edge.get("domain") == "state"
+    return {"dashed": dashed}
+
+
 def is_reject(node: dict) -> bool:
     return str(node.get("role", "")).lower() == "reject"
 
@@ -260,8 +281,66 @@ def route_edge(a: dict, b: dict) -> list:
 
 
 def make_edge(e, a, b, wps):
+    style = edge_style(e)
     return {"from": e["from"], "to": e["to"], "label": e.get("label") or "",
-            "dashed": bool(e.get("dashed", False)), "waypoints": wps}
+            "dashed": style["dashed"], "waypoints": wps}
+
+
+# ── Straight-segment guard (Phase T6) ─────────────────────────────────────────
+# Adjacent columns/bands are connected straight ONLY when the straight segment
+# is genuinely node-free. Stacked columns make naive straight lines cut through
+# the boxes above/below the endpoints; those edges fall back to the corridor
+# elbow, which is node-free by construction.
+
+def anchor_point(a: dict, b: dict) -> tuple:
+    """Mirror make_excalidraw_diagram.py's anchor choice: the side of box a
+    facing box b (horizontal-dominant exits sideways, vertical exits top/bottom)."""
+    acx, acy = a["x"] + a["w"] / 2, a["y"] + a["h"] / 2
+    bcx, bcy = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
+    dx, dy = bcx - acx, bcy - acy
+    if abs(dx) >= abs(dy):
+        return (a["x"] + a["w"], acy) if dx >= 0 else (a["x"], acy)
+    return (acx, a["y"] + a["h"]) if dy >= 0 else (acx, a["y"])
+
+
+def segment_crosses_box(p1: tuple, p2: tuple, box: tuple, tol: float = 2.0) -> bool:
+    """Liang-Barsky segment/rect intersection. `box` = (x, y, w, h), shrunk by
+    `tol` so lines that merely touch a border do not count."""
+    x, y, w, h = box
+    xmin, ymin, xmax, ymax = x + tol, y + tol, x + w - tol, y + h - tol
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, p1[0] - xmin), (dx, xmax - p1[0]), (-dy, p1[1] - ymin), (dy, ymax - p1[1])):
+        if p == 0:
+            if q < 0:
+                return False
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return False
+    return True
+
+
+def straight_is_clean(e, a: dict, b: dict, boxes: dict) -> bool:
+    """True when the straight anchor-to-anchor segment touches no third box."""
+    p1 = anchor_point(a, b)
+    p2 = anchor_point(b, a)
+    for nid, box in boxes.items():
+        if nid in (e["from"], e["to"]):
+            continue
+        if segment_crosses_box(p1, p2, box):
+            return False
+    return True
+
+
+def connect(e, a: dict, b: dict, boxes: dict, straight_when: bool):
+    """Straight when allowed AND clean; corridor elbow otherwise."""
+    wps = [] if (straight_when and straight_is_clean(e, a, b, boxes)) else route_edge(a, b)
+    return make_edge(e, a, b, wps)
 
 
 def router_layout(spec, multi_root: bool):
@@ -342,6 +421,7 @@ def router_layout(spec, multi_root: bool):
         band.placed_column(col)
 
     height, width = finalize_bands(bands, positions)
+    boxes = {nid: (p["x"], p["y"], p["w"], p["h"]) for nid, p in positions.items()}
 
     routed = []
     for e in spec.get("edges", []):
@@ -349,7 +429,7 @@ def router_layout(spec, multi_root: bool):
         if not a or not b:
             continue
         straight = (a["col"].band is b["col"].band and b["col"].i == a["col"].i + 1)
-        routed.append(make_edge(e, a, b, [] if straight else route_edge(a, b)))
+        routed.append(connect(e, a, b, boxes, straight))
 
     return positions, routed, max(width, MIN_NODE_W), max(height, MIN_NODE_H)
 
@@ -374,13 +454,14 @@ def chain_layout(spec):
         place_column(col, [n["id"]], sizes, positions)
         band.placed_column(col)
     height, width = finalize_bands(bands, positions)
+    boxes = {nid: (p["x"], p["y"], p["w"], p["h"]) for nid, p in positions.items()}
     routed = []
     for e in spec.get("edges", []):
         a, b = positions.get(e["from"]), positions.get(e["to"])
         if not a or not b:
             continue
         straight = (a["col"].band is b["col"].band and b["col"].i == a["col"].i + 1)
-        routed.append(make_edge(e, a, b, [] if straight else route_edge(a, b)))
+        routed.append(connect(e, a, b, boxes, straight))
     return positions, routed, max(width, MIN_NODE_W), max(height, MIN_NODE_H)
 
 
@@ -500,9 +581,16 @@ def grid_layout(spec):
         per_row += 1
         width = max(width, x - GAP_X)
         height = max(height, y + h)
-    routed = [make_edge(e, positions[e["from"]], positions[e["to"]], [])
-              for e in spec.get("edges", [])
-              if e["from"] in positions and e["to"] in positions]
+    boxes = {nid: (p["x"], p["y"], p["w"], p["h"]) for nid, p in positions.items()}
+    routed = []
+    for e in spec.get("edges", []):
+        a, b = positions.get(e["from"]), positions.get(e["to"])
+        if not a or not b:
+            continue
+        # grid rows wrap: treat same-row right-neighbours as straight candidates,
+        # everything else goes through the shared corridor router
+        straight = abs(a["y"] - b["y"]) < 1.0 and b["x"] > a["x"]
+        routed.append(connect(e, a, b, boxes, straight))
     return positions, routed, max(width, MIN_NODE_W), max(height, MIN_NODE_H)
 
 
@@ -539,6 +627,7 @@ def interpret(spec: dict) -> dict:
             "width": w, "height": h,
             "lines": lines,
             "fontSize": NODE_FONT,
+            "color": node_color(node),
         })
     return out
 

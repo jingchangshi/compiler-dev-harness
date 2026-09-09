@@ -1,0 +1,181 @@
+{
+  "artifact": "readiness_report",
+  "schema_version": 1,
+  "subject_id": "mergevecscope-pass",
+  "depth": "presentation",
+  "mechanical": {
+    "verdict": "pass",
+    "checks": [
+      {
+        "name": "schema_valid",
+        "status": "pass",
+        "detail": "subject/evidence/dossier/handoff shapes valid"
+      },
+      {
+        "name": "identity",
+        "status": "pass",
+        "detail": "subject pass:MergeVecScope"
+      },
+      {
+        "name": "purpose_explained",
+        "status": "pass",
+        "detail": "need/purpose present"
+      },
+      {
+        "name": "mental_model",
+        "status": "pass",
+        "detail": "2 sentence(s), identifier density 0%"
+      },
+      {
+        "name": "system_context",
+        "status": "pass",
+        "detail": "3 upstream/trigger, 1 downstream entries"
+      },
+      {
+        "name": "inputs_outputs",
+        "status": "pass",
+        "detail": "inputs/outputs/contracts present"
+      },
+      {
+        "name": "mechanism",
+        "status": "pass",
+        "detail": "7 source-derived stages"
+      },
+      {
+        "name": "two_views",
+        "status": "pass",
+        "detail": "implementation and conceptual views present"
+      },
+      {
+        "name": "canonical_example",
+        "status": "pass",
+        "detail": "example from test (6 steps)"
+      },
+      {
+        "name": "state_transitions",
+        "status": "pass",
+        "detail": "4 transitions"
+      },
+      {
+        "name": "decisions",
+        "status": "pass",
+        "detail": "4 decisions"
+      },
+      {
+        "name": "constraints",
+        "status": "pass",
+        "detail": "6 constraints, 2 invariants"
+      },
+      {
+        "name": "boundaries",
+        "status": "pass",
+        "detail": "6 boundary entries"
+      },
+      {
+        "name": "key_takeaways",
+        "status": "pass",
+        "detail": "5 takeaways"
+      },
+      {
+        "name": "fact_evidence",
+        "status": "pass",
+        "detail": "26 fact-class evidence records"
+      },
+      {
+        "name": "claims_trace_to_evidence",
+        "status": "pass",
+        "detail": "all explanation primitives cite ledger evidence"
+      },
+      {
+        "name": "placement",
+        "status": "pass",
+        "detail": "placement explained"
+      },
+      {
+        "name": "extension_pass",
+        "status": "pass",
+        "detail": "pipeline placement + IR contract + legality/rewrite present"
+      },
+      {
+        "name": "handoff_storyline",
+        "status": "pass",
+        "detail": "12 storyline steps"
+      },
+      {
+        "name": "handoff_visuals",
+        "status": "pass",
+        "detail": "6 visual specs"
+      },
+      {
+        "name": "handoff_takeaways",
+        "status": "pass",
+        "detail": "5 takeaways"
+      },
+      {
+        "name": "visual_semantics",
+        "status": "pass",
+        "detail": "semantic visual contract ok"
+      }
+    ]
+  },
+  "semantic_review": {
+    "verdict": "ready",
+    "audience_questions": [
+      {
+        "question": "它是什么？",
+        "sufficient": true
+      },
+      {
+        "question": "为什么存在？",
+        "sufficient": true
+      },
+      {
+        "question": "它处在什么上下文？",
+        "sufficient": true
+      },
+      {
+        "question": "输入和输出是什么？",
+        "sufficient": true
+      },
+      {
+        "question": "核心机制是什么？",
+        "sufficient": true
+      },
+      {
+        "question": "哪些状态最重要？",
+        "sufficient": true
+      },
+      {
+        "question": "哪些决策决定行为？",
+        "sufficient": true
+      },
+      {
+        "question": "与哪些组件交互？",
+        "sufficient": true
+      },
+      {
+        "question": "什么情况下不能工作或选择另一条路径？",
+        "sufficient": true
+      },
+      {
+        "question": "最值得记住的 3～5 点是什么？",
+        "sufficient": true
+      },
+      {
+        "question": "Pass 在 pipeline 的哪个位置，前后的 IR 形态是什么？",
+        "sufficient": true
+      },
+      {
+        "question": "合法性条件是什么，什么情况下拒绝改写？",
+        "sufficient": true
+      }
+    ],
+    "reviewer": "agent review (Phase T6 semantic refresh)",
+    "note": "T6 top-up reviewed: mechanism.states lifecycles, control_relations, and WE-1/2/3 answer the state/branch/worklist audience questions; the corrected takeaways replace the misleading per-merge score-matrix sync claim. Honest provenance: semantic refresh of the curated 09-08 analysis; source facts unchanged (file hash verified).",
+    "reviewed_at": "2026-09-09T16:40:00.000Z"
+  },
+  "verdict": "ready",
+  "reasons": [],
+  "driver": "phase-t6-refresh",
+  "evaluated_at": "2026-09-09T16:40:00.000Z"
+}

@@ -1221,3 +1221,59 @@ Agent 仍然独占全部语义工作(机制重构、mental model、bridges、sto
 - **Consumer**:新 deck `merge-vec-scope-slides-t5` 13 页;5 张 must-have 视觉全部经新引擎生成并通过几何 QA(V4 由 4204×510/10.1 降为 ~1500×640/2.4,9/19 条边为路由 elbow,投影字号 ≥16px);manifest 11/11 storyline 覆盖(step 8 split 带 reason)+ 5/5 must-have + WE-1/WE-2 映射 + 30 个 evidence id;check_project exit 0。
 - **渲染对照**:旧 deck HTML 10 处字面 `.footnote[` → 新 deck 0 处、13 个渲染 footer div;`✘ 设计拒绝` 伪列表 → 真 `<li>`;worked examples 为 2 个 `<ol>` 步骤列表。四类失败在渲染产物中逐一验证关闭。
 - 全套测试 275 pass / 8 fail(与 T4 基线完全一致的 Ripwire 环境失败),`teaching-dogfood` generic-layer 扫描名单已扩至全部新增 generic 文件。
+
+## 22. Phase T6:Semantic Visual Fidelity & Control-State Modeling(2026-09-09 已实现)
+
+目标:T5 之后的 dogfood 暴露"diagram geometry fidelity 已闭合,但 diagram **semantic** fidelity 无机械保障"——机制总览图几何合法(无重叠、边不穿节点、字号可读)却没有忠实表达源码的真实控制流与状态生命周期。T6 把"流程图看起来合理但执行语义不准确"从人工 reviewer 才能发现的问题,升级为 protocol + semantic model + deterministic validation + presentation consumer 支持 + regression tests + 真实 dogfood。producer/consumer 所有权边界不变:producer 继续拥有语义,consumer 继续拥有几何,本阶段给 **visual 增加的只是语义(semantic roles / stage mapping / edge kinds / state lifecycle / control regions),不是 geometry**。
+
+### 22.1 架构审计结论(Q1–Q8)
+
+- **Q1** dossier 有 `mechanism.stages[]`(name/what/where/key_functions)、`mutable_state`/`has_important_branching` 布尔、自由文本 `control_flow`/`data_flow`、worked examples——但**没有**状态实体、生命周期、类型化转移,无法表达 worklist/live order/analysis state/IR state 的区别,也无法表达 candidate construction/pre-check/legality/rewrite/commit/requeue/finalization 的边界。
+- **Q2** handoff visual 只有 kind/title/nodes/edges/ordering——没有 stage semantics、edge semantics、state lifecycle、branch meaning、loop semantics。
+- **Q3** 所有边都是 `from→to(+label 自由文本)`,consumer 无法区分 normal-next/success/reject/skip/retry/requeue/backedge/data-dependency/state-read/state-update——label 不参与任何判定,退化不产生任何信号。
+- **Q4** 不能:T5 deck 的机制总览把 7 个源码阶段画成 6 个节点、把"Maintain & verify"折叠进贪心循环,几何 QA 与 manifest 覆盖都检测不到(几何合法、visual id 全映射)。
+- **Q5** 不能:无法表达 startVFs(worklist)与 vfs(live order)是两个生命周期不同的状态实体,更无法禁止把它们画成一个"VF 序列"节点。
+- **Q6** 不能:没有 lifecycle model,就无法判定"useScoreMat 初始化后只读"与"每轮合并同步"矛盾;T5 deck 的 takeaway"三份状态……每次合并后必须同步"正是这个错误(把 initialization-only derived state 误述为每轮重算)。
+- **Q7** 需要:split > shrink 之上增加 **split > semantic compression**——一张图无法同时准确表达 phase structure/candidate scheduling/mutable state/rewrite/loop feedback 时应拆图,而不是把不同语义层次压成更大的节点。
+- **Q8** 边界:deterministic 可判 = 标识符解析 + 声明集合比较(stage 是否被消费、状态访问是否与声明一致、声明 relation 是否被消费);仍需 agent review = 标签是否达意、聚合理由是否诚实、图是否好教。本阶段明确不尝试"自动证明流程图与 C++ 等价"。
+
+### 22.2 语义视觉契约(Workstream A+D,protocol v1 加性扩展)
+
+- **producer(dossier)**:`mechanism.states[]`(`{id,name,kind∈work_queue|live_sequence|analysis|derived|ir|accounting|other, created_in, read_in[], updated_in[], finalized_in?, evidence_refs, note?}`,stage 引用必须解析)+ `mechanism.control_relations[]`(`{from,to,kind∈next|success|failure|reject|skip|requeue|retry|loop|finalize, condition?, evidence_refs, note?}`,允许自环 backedge)。
+- **consumer(handoff visual,全部可选向后兼容)**:`covers`(mechanism/control_flow/state_lifecycle,义务绑定到声明)、node `mechanism_stages`/`state_refs` + `stage_merge_reason`/`state_merge_reason`(>1 必须给理由,禁止 silent collapse)、edge `domain`(control|state|data)+ per-domain `kind`(control 9 种;state: create/read/update/finalize;data: flow/dependency)+ `states`、visual `stage_dispositions`(deferred|merged + reason + to_visual?)与 `deferred_relations`(reason 必须)。**edge domain 分离**:control 与 state/data 是不同论域,kind 按 domain 分开,拒绝路径不会被当成数据依赖。
+- **split > semantic compression**:`SPLIT_RECOMMENDED`(≥5 stage + ≥2 mutable state family + loop 边 + reject 族边)只是 recommendation/warning,不是 hard gate——证据尚不足以支撑 universal hard error。
+
+### 22.3 语义保真校验器(Workstream B)
+
+新增 `scripts/check-visual-semantics.mjs`(纯模块 + CLI;`teaching-schema.mjs` 引用其枚举做 shape 校验并把 `visual_semantics` 检查并入 readiness/preflight,使语义不忠实的 bundle **不再 CONSUMABLE**;编排 final gate 经 preflight 自动继承)。deterministic 检查:stage_coverage(声称机制总览却 silent drop stage = error,支持显式 disposition)、stage_merge_reason(静默多阶段聚合)、branch_coverage(声称控制流须有 reject 族路径或带理由 defer)、state_contract_gap(声明 mutable_state 却无 states[] = producer 契约缺口,校验器绝不从源码反推)、state_lifecycle_coverage(state_lifecycle 声明须有真实 update 路径)、lifecycle_contradiction(**对 updated_in=[] 的 initialization-only 状态声称更新 = error**)、lifecycle_stage_mismatch(状态访问归属到未声明该访问的 stage)、state_role_collapse(一个节点静默合并不同 kind 的状态)、control_relation_coverage(声明的 relation 必须被某条边消费或带理由 defer);warning:mechanism_claim_missing(有 stage 无声明——旧 bundle 兼容)。split 推荐独立于错误判定。
+
+### 22.4 Consumer 支持与几何引擎修正
+
+- `spec_to_diagram.py`:语义→视觉编码(consumer 决策):state-only 节点 amber、stage 节点 blue、state-domain 边 dashed;**直线段守卫**:相邻列/带直线仅当 anchor-to-anchor 线段不穿过任何第三方盒子(Liang-Barsky 判交),否则回落走廊 elbow——修复堆叠列下"直连必然穿节点"的引擎缺陷(V2B dogfood 暴露),router_layout/chain_layout/grid_layout 三个布局统一接线。
+- preflight digest 透传 `covers/stages_mapped/state_edges/control_kinds` 与 `dossier_pointers.mechanism_states`,consumer 无需重读原始 artifact 即可看到契约。
+
+### 22.5 测试与回归
+
+新增 `scripts/test/visual-semantics.test.mjs`(17 tests):真实 T5 失败 visual(fixture `mergevecscope-t5-v2-visual.json`,T6 契约回溯声明)复现 stage 覆盖失败并验证修复;13.2 生命周期矛盾/stage 归属;13.3 worklist vs live 序列 collapse;13.4 边 kind 消费;13.5 requeue relation 保留/defer;13.6 SPLIT_RECOMMENDED 永不作为 error;schema 集成、readiness `visual_semantics`、legacy bundle 兼容、preflight digest、consumer 渲染(dashed/amber/legacy 不变)。`teaching-dogfood` 反过拟合扫描名单 +1 文件、禁词表 +9(startVFs/VFDependencyGraph/allDepsClosure/mergeNoBetween/mergeNoMemory/useScoreMat/scoreIdx/toRemoveVFs/patchCalls)。全套 302 tests / 294 pass / 8 fail——失败集合与 T4/T5 基线逐项一致(Ripwire 环境失败),零新增。
+
+### 22.6 Dogfood 结论(详见 analysis/2026-09-09-phase-t6-semantic-visual-fidelity.md)
+
+- **Producer**:新建 curated bundle `analysis/explanations/2026-09-09-merge-vec-scope-semantic/`(继承 09-08 七阶段分析,源文件 sha256 逐字节验证未变):+6 条 source_fact(EV-025~030,worklist 再入/live 序列提交/延迟删除/链宽计数/闭包同步位置/游标单调),+9 个状态实体、+11 条类型化 control relations,+3 个 worked_examples(WE-1/WE-2 重构版 + WE-3 贪心链式 vfs=[A,B,C] 实例,全部 kind=reconstructed 诚实标注),takeaways 修正("三份状态每次同步"→按代码位置拆分的同步义务 + useScoreMat 只读)。validate 0 errors、READY、preflight CONSUMABLE。
+- **Consumer**:V2 按 split 策略拆为 V2A(七阶段控制流,7/7 stage 映射,10 边全部类型化)+ V2B(成功合并状态账本,10 条 state 边按 create/update/read/finalize 类型化);check-visual-semantics PASS、几何 QA 全 PASS(V1 aspect 6.05 为继承的宽 pipeline 形态,warning)、check_project exit 0、Quarto 渲染 16 页。渲染产物核验:误导表述 0 处、修正表述在位、15 个 footer div、0 个字面 `.footnote[`。浏览器截图 QA:环境无 chromium/playwright,`NOT_RUN_ENVIRONMENT`(不伪造)。
+- dogfood deck 以 `analysis/presentations/2026-09-09-merge-vec-scope-t6/` 入库(manifest 指回 curated bundle,hash 可复算)。
+
+### 22.7 文件清单(Phase T6 增改)
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/check-visual-semantics.mjs` | 新增:语义视觉契约枚举 + deterministic 校验器 + split 推荐 + CLI |
+| `scripts/teaching-schema.mjs` | mechanism.states/control_relations + visual 语义字段 shape 校验 + readiness `visual_semantics` |
+| `scripts/preflight-handoff.mjs` | digest 透传语义契约字段 |
+| `skills/…-presentation/scripts/spec_to_diagram.py` | 语义→视觉编码(amber/dashed/blue)+ 直线段守卫(Liang-Barsky → 走廊 elbow) |
+| `skills/…-presentation/references/compiler-presentation-guidelines.md` | split > semantic compression 政策 |
+| `skills/…-presentation/SKILL.md` | 语义视觉契约章节 + 非协商规则 6 扩充 |
+| `skills/code-explanation/{SKILL.md,references/teaching-artifact-guide.md}` | states/control_relations/visual 语义字段手册 |
+| `scripts/test/visual-semantics.test.mjs` + `fixtures/mergevecscope-t5-v2-visual.json` | 17 tests + 真实失败 visual 回归 fixture |
+| `scripts/test/teaching-dogfood.test.mjs` | 反过拟合名单/禁词表扩充 |
+| `analysis/explanations/2026-09-09-merge-vec-scope-semantic/` | T6 curated bundle(states/relations/WE-1~3/修正 takeaways) |
+| `analysis/presentations/2026-09-09-merge-vec-scope-t6/` | T6 dogfood deck(V2A/V2B 拆分 + WE-3,全 QA 绿 + 渲染) |

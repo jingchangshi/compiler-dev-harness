@@ -1,0 +1,278 @@
+{
+  "artifact": "presentation_manifest",
+  "schema_version": 1,
+  "input": {
+    "bundle_id": "2026-09-09-merge-vec-scope-semantic",
+    "bundle_dir": "analysis/explanations/2026-09-09-merge-vec-scope-semantic",
+    "subject_id": "mergevecscope-pass",
+    "subject_type": "pass",
+    "handoff_schema_version": 1,
+    "handoff_sha256": "66df5d9d9f130df714ef300d9bb0e60c64416801796e5d9de96cbb7fbf0aa24b",
+    "dossier_sha256": "f084b0cb64d7c10683edd528921c97c37dd24e7f18f5bbe50d2aca3d42762c1f",
+    "source_head": "90037fe3371cb88d50c42cd4e165075cbafe83b1",
+    "readiness_verdict": "ready",
+    "preflight": "CONSUMABLE"
+  },
+  "consumed": {
+    "storyline": [
+      {
+        "position": 1,
+        "role": "为什么存在",
+        "disposition": "consumed",
+        "slides": [
+          "为什么需要 MergeVecScope？"
+        ]
+      },
+      {
+        "position": 2,
+        "role": "核心想法",
+        "disposition": "consumed",
+        "slides": [
+          "一句话心智模型"
+        ]
+      },
+      {
+        "position": 3,
+        "role": "管线位置",
+        "disposition": "consumed",
+        "slides": [
+          "两个合并窗口"
+        ]
+      },
+      {
+        "position": 4,
+        "role": "机制总览",
+        "disposition": "consumed",
+        "slides": [
+          "机制总览：一次性分析 → 候选循环 → 成功提交"
+        ]
+      },
+      {
+        "position": 5,
+        "role": "状态账本",
+        "disposition": "consumed",
+        "slides": [
+          "一次成功合并后：哪些状态发生变化？"
+        ]
+      },
+      {
+        "position": 6,
+        "role": "链式合并实例",
+        "disposition": "consumed",
+        "slides": [
+          "Worked example：贪心链式合并（A+B 成功后）"
+        ]
+      },
+      {
+        "position": 7,
+        "role": "打分与贪心",
+        "disposition": "consumed",
+        "slides": [
+          "打分与贪心合并循环"
+        ]
+      },
+      {
+        "position": 8,
+        "role": "合法性门",
+        "disposition": "consumed",
+        "slides": [
+          "tryMerge：两段拒绝，一票否决"
+        ]
+      },
+      {
+        "position": 9,
+        "role": "物化与延迟删除",
+        "disposition": "consumed",
+        "slides": [
+          "物化与延迟删除"
+        ]
+      },
+      {
+        "position": 10,
+        "role": "实例走一遍",
+        "disposition": "split",
+        "slides": [
+          "实测实例：dependency-update",
+          "Worked example：依赖图演化推演",
+          "Worked example：闸门链逐门推演"
+        ],
+        "reason": "T6 拆分：实测实例一页，WE-1/WE-2 两个 worked examples 各以有序步骤列表单独成页（配示意/闸门配图）"
+      },
+      {
+        "position": 11,
+        "role": "边界与风险",
+        "disposition": "consumed",
+        "slides": [
+          "能力范围",
+          "已知风险"
+        ]
+      },
+      {
+        "position": 12,
+        "role": "总结",
+        "disposition": "consumed",
+        "slides": [
+          "总结"
+        ]
+      }
+    ],
+    "must_have_visuals": [
+      {
+        "id": "V1",
+        "assets": [
+          "diagrams/V1.excalidraw",
+          "diagrams/V1.svg"
+        ],
+        "slides": [
+          "两个合并窗口"
+        ]
+      },
+      {
+        "id": "V2A",
+        "assets": [
+          "diagrams/V2A.excalidraw",
+          "diagrams/V2A.svg"
+        ],
+        "slides": [
+          "机制总览：一次性分析 → 候选循环 → 成功提交"
+        ]
+      },
+      {
+        "id": "V2B",
+        "assets": [
+          "diagrams/V2B.excalidraw",
+          "diagrams/V2B.svg"
+        ],
+        "slides": [
+          "一次成功合并后：哪些状态发生变化？"
+        ]
+      },
+      {
+        "id": "V3",
+        "assets": [
+          "diagrams/V3.excalidraw",
+          "diagrams/V3.svg"
+        ],
+        "slides": [
+          "实测实例：dependency-update"
+        ]
+      },
+      {
+        "id": "V4",
+        "assets": [
+          "diagrams/V4.excalidraw",
+          "diagrams/V4.svg"
+        ],
+        "slides": [
+          "tryMerge：两段拒绝，一票否决"
+        ]
+      }
+    ],
+    "optional_visuals": [
+      {
+        "id": "V5",
+        "used": true,
+        "slides": [
+          "Worked example：依赖图演化推演"
+        ],
+        "assets": [
+          "diagrams/V5.excalidraw",
+          "diagrams/V5.svg"
+        ]
+      }
+    ],
+    "worked_examples": [
+      {
+        "id": "WE-1",
+        "disposition": "consumed",
+        "slides": [
+          "Worked example：依赖图演化推演"
+        ]
+      },
+      {
+        "id": "WE-2",
+        "disposition": "consumed",
+        "slides": [
+          "Worked example：闸门链逐门推演"
+        ]
+      },
+      {
+        "id": "WE-3",
+        "disposition": "consumed",
+        "slides": [
+          "Worked example：贪心链式合并（A+B 成功后）"
+        ]
+      }
+    ],
+    "key_takeaways": [
+      "两个窗口：L1 在 bufferize 前合 tensor 级 VF（一套 buffer），L2 在其后合 memref 级 VF（可折叠间隔代码）。",
+      "startVFs 是候选 worklist，vfs 是当前调用序 live 状态——成功合并把 merged 占回 vf1 槽位并追加到 startVFs 尾部稍后处理，不是立即递归。",
+      "每轮成功合并后真正同步的是 allDepsClosure（patchCalls 内）、VFDependencyGraph（外层提交）和 vfs/startVFs/numVFInMergedVF/toRemoveVFs（外层提交）；useScoreMat/useScoreTotal 只在初始化打分时构建，之后只读。",
+      "两段拒绝：外层预检查发生在 tryMerge 之前；tryMerge 闸门一票否决——宁可漏合不可错合。",
+      "删除分两步：旧调用在 patchCalls 内擦除；旧 VF 函数延迟到 while 结束后经 toRemoveVFs 统一 func.erase。"
+    ],
+    "evidence_ids": [
+      "EV-001",
+      "EV-003",
+      "EV-005",
+      "EV-006",
+      "EV-007",
+      "EV-008",
+      "EV-009",
+      "EV-010",
+      "EV-011",
+      "EV-012",
+      "EV-013",
+      "EV-015",
+      "EV-017",
+      "EV-019",
+      "EV-020",
+      "EV-025",
+      "EV-026",
+      "EV-027",
+      "EV-028",
+      "EV-029",
+      "EV-030"
+    ]
+  },
+  "adaptations": [
+    {
+      "source_element": "handoff.visuals V2（T5 版六阶段机制总览）",
+      "presentation_decision": "按 T6 split > semantic-compression 策略拆为 V2A（机制总览：七阶段控制流）与 V2B（成功合并的状态账本）两张图",
+      "reason": "单图同时承载阶段结构、候选调度、状态变更与循环反馈会把 7 个阶段压成 6 个节点并折叠 Maintain & verify——T5 dogfood 的真实失败模式；dossier.states/control_relations 让拆分边界有据可依"
+    },
+    {
+      "source_element": "handoff.key_takeaways / dossier.key_takeaways",
+      "presentation_decision": "采用 T6 修正后的表述：startVFs 与 vfs 分列为两个序列；useScoreMat/useScoreTotal 标注为初始化后只读；同步义务按代码位置（patchCalls 内 vs 外层提交）拆开",
+      "reason": "T5 版『三份状态……每次合并后必须同步』把 initialization-only derived state 误述为每轮重算的可变状态，与 mechanism.states 声明的生命周期矛盾（lifecycle_contradiction 类）"
+    },
+    {
+      "source_element": "handoff.visuals V4（闸门树，继承自 curated handoff）",
+      "presentation_decision": "为 reject 出边补 kind=reject、主链补 kind=next/success，并声明 covers=[control_flow]",
+      "reason": "T6 edge-kind 契约：拒绝路径必须是类型化控制边，而不是仅靠 label 文本区分"
+    },
+    {
+      "source_element": "handoff.optional_visuals V5",
+      "presentation_decision": "渲染为 WE-1 的示意配图（dependency_graph），标注『示意，非实测 IR』",
+      "reason": "WE-1 为 reconstructed 推演；示意配图帮助听众对照依赖图防错合并机制，不冒充实测证据"
+    }
+  ],
+  "generated": {
+    "qmd": "slides.qmd",
+    "diagrams": [
+      "diagrams/V1.excalidraw",
+      "diagrams/V1.svg",
+      "diagrams/V2A.excalidraw",
+      "diagrams/V2A.svg",
+      "diagrams/V2B.excalidraw",
+      "diagrams/V2B.svg",
+      "diagrams/V3.excalidraw",
+      "diagrams/V3.svg",
+      "diagrams/V4.excalidraw",
+      "diagrams/V4.svg",
+      "diagrams/V5.excalidraw",
+      "diagrams/V5.svg"
+    ],
+    "rendered": null
+  }
+}

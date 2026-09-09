@@ -1,0 +1,342 @@
+{
+  "artifact": "evidence",
+  "records": [
+    {
+      "id": "EV-001",
+      "class": "source_fact",
+      "statement": "Pass identity and options: def MergeVecScope : Pass<\"hfusion-merge-vf\", \"ModuleOp\">, summary 'Merge vf function', constructor mlir::hfusion::createMergeVecScopePass(); options merge-level (int, default 1; '0: no merge; 1: merge VFs only without dependency; 2: merge all VFs') and merge-vf-num-limit (int, default 4, 'allowed maximum number of merged VFs').",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/include/bishengir/Dialect/HFusion/Transforms/Passes.td",
+          "lines": "719-732"
+        }
+      ]
+    },
+    {
+      "id": "EV-002",
+      "class": "source_fact",
+      "statement": "Subject collection: runOnOperation walks the module collecting funcs where hivm::isVF(f) into vfs; the root is the single non-VF func found by the same walk; without a root the pass returns early.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "471-492"
+        }
+      ]
+    },
+    {
+      "id": "EV-003",
+      "class": "source_fact",
+      "statement": "VF ordering: root.walk over func.call ops collects callees in first-call order; vfs is reordered to that call order with never-called VFs appended after (comment: 'the first function call the VF should be first').",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "494-513"
+        }
+      ]
+    },
+    {
+      "id": "EV-004",
+      "class": "source_fact",
+      "statement": "Alias analysis: utils::MemrefAliasAnalysisState is built over the root; for every op with alias info, state.unionAliasSets joins the alias sets — later isAlias queries use these unions.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "526-545"
+        }
+      ]
+    },
+    {
+      "id": "EV-005",
+      "class": "source_fact",
+      "statement": "Dependency facts are same-block only: SSA deps recorded when defOp->getBlock() == op->getBlock() (:557); memref Read/Write deps short-circuit on op1->getBlock() != op2->getBlock() (:583); combined deps then go through computeDependencyClosure (:609).",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "551-609"
+        }
+      ]
+    },
+    {
+      "id": "EV-006",
+      "class": "source_fact",
+      "statement": "Scoring: useScoreMat[i][j]=1 marks forward usage when any call pair of vf_i/vf_j is dependency-related via isDep on the closure; useScoreTotal drives stable_partition so dependency-free VFs merge first; VFDependencyGraph is filled from the score matrix.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "628-686"
+        }
+      ]
+    },
+    {
+      "id": "EV-007",
+      "class": "source_fact",
+      "statement": "Greedy merge loop: for each startVFs entry in call-ordered position, candidate pair is (vfs[i], vfs[i+1]); mergeLevel==1 skips pairs where vfDependencyGraph.areRelated; pairs are skipped when numVFInMergedVF sums exceed mergeVFNumLimit; on tryMerge success the merged VF replaces the pair, is re-queued into startVFs, vfDependencyGraph.mergeNodes rewires, and both old VFs are collected into toRemoveVFs and erased after the loop; final LLVM_DEBUG logs 'Number of VFs before/after'.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "699-861"
+        }
+      ]
+    },
+    {
+      "id": "EV-008",
+      "class": "source_fact",
+      "statement": "tryMerge legality gates: needs call1/call2 found adjacent in the root walk; hasCompatibleResultExtractKind must pass; both calls must share getParentRegion(); any hivm::SyncBlockSetOp/SyncBlockWaitOp in the gap rejects ('temporarily regard sync_block instr as memory op'); anchor-bearing gap ops are pinned (SSA-neighbor closure) and a pinned result feeding call2 rejects; gap mem ops must be movable (moveAfterVf2 / moveBeforeVf1 by isDep, else SplitMove must succeed); at mergeLevel==1 any remaining unpinned gap ops reject.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "863-1063"
+        }
+      ]
+    },
+    {
+      "id": "EV-009",
+      "class": "source_fact",
+      "statement": "mergeNoBetween rewrite: rejects mismatched func core types; builds merged func with unified args where vf2 block args fed by call1 results are remapped to vf1's results; clones vf1 body then vf2 body (without terminators) via IRMapping; concatenates returns; patchCalls creates one func.call with call1's args plus call2's non-duplicate args, sets ptc_simdvf unit attr, copies other call attrs, RAUWs both calls' results, updates allDepsClosure, erases both calls.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "1285-1424"
+        }
+      ]
+    },
+    {
+      "id": "EV-010",
+      "class": "source_fact",
+      "statement": "mergeNoMemory rewrite: for non-empty gaps, betweenInfo records {usedAfter, feedsVF2} per gap op; used-after intermediates become extra merged-func results and their external inputs extra args; gap mem ops are lifted into the merged function body between the cloned vf1/vf2 bodies; final call operands are vf1's + remaining vf2's + external inputs; used-after gap ops are erased after RAUW.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "1427-1601"
+        }
+      ]
+    },
+    {
+      "id": "EV-011",
+      "class": "source_fact",
+      "statement": "Self-verification and known soft spots in current HEAD: mergedFunc.verify() failure triggers signalPassFailure at MergeVecScope.cpp:1420-1422 (mergeNoMemory) and :1623-1625 (final); the assumption 'each vf is used only once' exists only as a comment at :631; same-block-only dependency scans at :557 and :583.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "1420-1422"
+        },
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "1623-1625"
+        },
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "631"
+        }
+      ]
+    },
+    {
+      "id": "EV-012",
+      "class": "source_fact",
+      "statement": "Pipeline placements: in HIVMRegbasePipelines.cpp the L1 placement adds createMergeVecScopePass(mergeLevel=1) only when hivmPipelineOptions.enableVfMergeLevel==1, before createSimplifyVFArgsPass and before tensor-copy-insertion/OneShotBufferize (:230-234); the L2 placement adds createMergeVecScopePass(mergeLevel=2) when enableVfMergeLevel==2, immediately after OneShotBufferize (:254-260) — the two placements are mutually exclusive by the same option.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HIVM/Pipelines/regbase/HIVMRegbasePipelines.cpp",
+          "lines": "228-261"
+        }
+      ]
+    },
+    {
+      "id": "EV-013",
+      "class": "graph_fact",
+      "statement": "Knowledge graph (mlir-repomap review MergeVecScope, index @ head 90037fe33): pass id pass:hfusion-merge-vf, summary 'Merge vf function', Passes.td:719; Phase-13 review record states the intent ('VF call overhead on vector cores dominates small-kernel execution; merging VFs amortizes per-call scheduling'), lists the verify guards as HAS_CONSTRAINT-enforced, names the single-use assumption as the UNGUARDED invariant, and records the same-block dependency scan as the coverage opportunity; two open findings MVS-001 (correctness) and MVS-002 (opportunity) link to this pass.",
+      "tool": "mlir-repomap",
+      "command": "review MergeVecScope",
+      "refs": [
+        {
+          "file": "docs/compiler-architecture/passes/merge-vec-scope.md",
+          "lines": "197"
+        }
+      ]
+    },
+    {
+      "id": "EV-014",
+      "class": "historical_fact",
+      "statement": "History: commit 4ddead06f (2026-07-15, '[Huawei][AscendNPU IR] migrate MergeVecScope from A5') introduced the file wholesale (1669 insertions); the knowledge memory's regression note says the single-use assumption came with the port and no fix has landed since.",
+      "tool": "git",
+      "command": "git log/show on bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+      "commit": "4ddead06f"
+    },
+    {
+      "id": "EV-015",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt --hfusion-merge-vf=\"merge-level=1\" -split-input-file on bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-1.mlir (exit 0): the two adjacent tensor-level VF calls of the attention fixture become one call '%11:4 = call @_attn_fwd_outlined_merged_merged_vf_0(...)' returning 4 results, matching the file's CHECK; VFs of other scopes in the same fixture (e.g. _attn_fwd_scope_3_outlined_manual_vf_0) remain unmerged calls.",
+      "tool": "bishengir-opt",
+      "command": "bishengir-opt --hfusion-merge-vf=merge-level=1 -split-input-file merge-vf-level-1.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-1.mlir"
+        }
+      ]
+    },
+    {
+      "id": "EV-016",
+      "class": "runtime_fact",
+      "statement": "Executed build/bin/bishengir-opt --hfusion-merge-vf=\"merge-level=2\" -split-input-file on bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-2.mlir (exit 0): the merged function rms_norm_f32_split_n_with_vf_merge_outlined_merged__merged_vf_0 has memref-typed arguments and results, and the fused call carries {hivm.vector_function, no_inline, ptc_simdvf} — L2 output is post-bufferization memref IR.",
+      "tool": "bishengir-opt",
+      "command": "bishengir-opt --hfusion-merge-vf=merge-level=2 -split-input-file merge-vf-level-2.mlir",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-2.mlir"
+        }
+      ]
+    },
+    {
+      "id": "EV-017",
+      "class": "source_fact",
+      "statement": "Test corpus: merge-vf-level-1.mlir (CHECK expects the merged 4-result call) and merge-vf-level-2.mlir (memref form) under test/Dialect/HIVM/RegBase/; hfusion-merge-vf-dependency-update.mlir and hfusion-merge-vf-extract-kind.mlir under test/Dialect/HFusion/ cover dependency-graph updates and extract-kind gating respectively.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/test/Dialect/HIVM/RegBase/merge-vf-level-1.mlir",
+          "lines": "1-9"
+        },
+        {
+          "file": "bishengir/test/Dialect/HFusion/hfusion-merge-vf-extract-kind.mlir"
+        }
+      ]
+    },
+    {
+      "id": "EV-018",
+      "class": "source_fact",
+      "statement": "Repository architecture dossier docs/compiler-architecture/passes/merge-vec-scope.md (Phase 5 provenance, HEAD 5671889a3) documents the same two placements as 'two mutually-exclusive positions encode two strategies' with pipeline orders 1 (pre tensor-copy-insertion) and 5 (post OneShotBufferize/DropEquivalentBufferResults) in bufferizationPipeline; its pipeline-context table matches EV-012 at current HEAD.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "docs/compiler-architecture/passes/merge-vec-scope.md",
+          "lines": "1-40"
+        }
+      ]
+    },
+    {
+      "id": "EV-019",
+      "class": "source_fact",
+      "statement": "VFDependencyGraph keeps vfDeps (forward) and vfUsers (reverse) maps with self-edge rejection; mergeNodes(old1, old2, merged) unions adjacency of the two old nodes into the merged node and rewires neighbors' reverse edges; verify() asserts reverse-edge and self-edge consistency and is called under LLVM_DEBUG after every graph mutation.",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "143-235"
+        }
+      ]
+    },
+    {
+      "id": "EV-020",
+      "class": "source_fact",
+      "statement": "Extract-kind gate rationale (in-code comment): 'Only merge VFs whose result are all extract or none extract. If one vf's result is extracted the other is not, extracted result will be converted V->S wait, which will prevent double buffering.'",
+      "tool": "source-read",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "913-919"
+        }
+      ]
+    },
+    {
+      "id": "EV-021",
+      "class": "reasoning",
+      "statement": "The merge loop is a greedy adjacent-pair scheme: sorting VFs into root call order first, then repeatedly fusing call-adjacent pairs (re-queuing merged results) preserves program order while amortizing scheduling; no comment states 'greedy', so this is structural inference from the loop shape (EV-007) plus the call-order sort (EV-003).",
+      "tool": "agent-analysis"
+    },
+    {
+      "id": "EV-022",
+      "class": "reasoning",
+      "statement": "Why two placements: L1 merges tensor-level VFs so bufferization sees one smaller call graph (fewer allocations/copies to plan), while L2 deliberately waits for concrete memref alias information; the shared enableVfMergeLevel gate makes them mutually exclusive. Inferred from the placement evidence (EV-012), the observed IR-form difference between L1/L2 outputs (EV-015/EV-016), and the repo dossier's 'two strategies' reading (EV-018) — no comment states this motivation directly."
+    },
+    {
+      "id": "EV-023",
+      "class": "reasoning",
+      "statement": "The L2 fixture's merged signature shows the cost side of mergeNoMemory: intermediates that are used after the gap become extra results of the merged VF (11 args / 4 results in the rms_norm fixture), trading call count for wider call signatures; derived from EV-010 against the observed EV-016 output."
+    },
+    {
+      "id": "EV-024",
+      "class": "reasoning",
+      "statement": "Direction ambiguity in the same-block limitation (raised by the T2 independent audience review): the knowledge finding MVS-002 frames the same-block-only scan as declining legal cross-block merges, while the mechanism reading implies missed dependencies could also UNSAFELY admit merges — missed forward-usage edges weaken L1's areRelated gate, and missed cross-block deps can corrupt L2 gap-move decisions. The reviewed evidence does not reconcile the two framings; the safety direction of the same-block limitation is treated as unknown pending a concrete cross-block scenario.",
+      "tool": "agent-analysis",
+      "note": "independent review finding recorded per consumer feedback loop (Phase T2 §23); no schema change required — existing evidence/boundary fields carry it"
+    },
+    {
+      "id": "EV-025",
+      "class": "source_fact",
+      "statement": "Worklist requeue: on tryMerge success the merged VF is appended to the START-set worklist (startVFs.push_back(mergedVfRef.getOperation()), :801-802) while scoreIdx keeps advancing — the merged VF is reprocessed LATER through the worklist, never merged recursively at the success point.",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "801-812"
+        }
+      ]
+    },
+    {
+      "id": "EV-026",
+      "class": "source_fact",
+      "statement": "Live-order commit: insertedPos aliases &vfs[vf1Idx] (:772); on success vfs[vf1Idx] becomes the merged VF and vf2, then vf1, are erased from vfs (:774-786) — the current call order shrinks in place and the merged VF occupies the old vf1 slot.",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "772-786"
+        }
+      ]
+    },
+    {
+      "id": "EV-027",
+      "class": "source_fact",
+      "statement": "Deferred deletion: old VF objects are collected into toRemoveVFs (:787-791, comment: erasing them directly would also remove the startVFs element); func.erase() runs only after the while loop exits (:821-823).",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "787-823"
+        }
+      ]
+    },
+    {
+      "id": "EV-028",
+      "class": "source_fact",
+      "statement": "Chain-width accounting: numVFInMergedVF is initialized to 1 per VF (:697-700); pairs whose accumulated counts exceed mergeVFNumLimit are skipped before tryMerge (:753-770); on success the merged VF inherits the sum (:781-783).",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "697-783"
+        }
+      ]
+    },
+    {
+      "id": "EV-029",
+      "class": "source_fact",
+      "statement": "Dependency-closure maintenance lives inside the rewrite: patchCalls writes allDepsClosure[newCall] as the union of call1/call2 closures (:1145-1150) and rewrites existing entries in place (:1152 onward) — the closure is updated during patchCalls, not by the outer loop.",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "1145-1160"
+        }
+      ]
+    },
+    {
+      "id": "EV-030",
+      "class": "source_fact",
+      "statement": "Worklist termination: every path through the greedy loop body ends with scoreIdx++ (:731, :737, :749, :768, :811) — skip, pre-check reject, legality reject, and success all advance the same monotonic cursor.",
+      "refs": [
+        {
+          "file": "bishengir/lib/Dialect/HFusion/Transforms/MergeVecScope.cpp",
+          "lines": "727-812"
+        }
+      ]
+    }
+  ]
+}

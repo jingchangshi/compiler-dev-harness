@@ -109,8 +109,10 @@ Take inspiration from high-quality Excalidraw systems, but implement the final f
 ### Practical rules
 
 - if the figure becomes crowded, split it into two slides;
+- **split > semantic compression (Phase T6)**: when one figure would have to carry several different teaching jobs at once — phase structure, candidate scheduling, mutable-state evolution, rewrite, loop feedback — prefer 2 related visuals over compressing distinct semantic levels into fewer, bigger nodes. Never fold a real mechanism stage away to save space: the semantic checker fails a claimed overview visual that silently drops a stage. The bounded trigger (many mapped stages ≥ 5, ≥ 2 mutable state families, a loop edge, and a reject-family edge) surfaces as `SPLIT_RECOMMENDED` — a recommendation, never an error;
+- a visual that claims a semantic question (`covers`) must answer it with structured content — stage mappings, state relations, typed edges — not with prose alone;
 - avoid three separate legends if direct labeling is enough;
-- use color semantically: blue focus, green success/internal flow, amber caution, red reject;
+- use color semantically: blue focus, green success/internal flow, amber caution/state, red reject; the diagram engine already renders producer-declared state nodes amber and state-access edges dashed;
 - keep the number of colors small.
 
 ## 6. Content hierarchy per slide

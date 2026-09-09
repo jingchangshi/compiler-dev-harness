@@ -1,0 +1,129 @@
+{
+  "note": "REAL failing visual from the T5 MergeVecScope dogfood deck (runtime bundle 2026-09-09-merge-vec-scope-pass, handoff.visuals[V2]), paired with the 7 source-derived stage names of the curated dossier (analysis/explanations/2026-09-08-mergevecscope-pass). The T6 contract (covers:['mechanism']) is grafted RETROACTIVELY in tests to demonstrate that the new semantic checker catches the silent stage drop the T5 geometry QA could not: 'Maintain & verify' was folded away and 7 stages were drawn as 6 nodes. Fixtures may carry subject terms; generic code may not.",
+  "source": "analysis/presentations/2026-09-09-merge-vec-scope-t5 slides (机制总览：依赖模型与三份状态)",
+  "stages": [
+    "Collect & order",
+    "Build dependency facts",
+    "Score & prioritize",
+    "Greedy merge loop",
+    "Prove pair legality",
+    "Rewrite",
+    "Maintain & verify"
+  ],
+  "visual": {
+    "id": "V2",
+    "kind": "flowchart",
+    "title": "pass 内部六阶段与三份私有状态",
+    "purpose": "机制总览：数据如何从分析流向决策再到改写",
+    "nodes": [
+      {
+        "id": "s1",
+        "label": "S1 收集并按调用序排列 VF",
+        "role": "stage"
+      },
+      {
+        "id": "s2",
+        "label": "S2 依赖建模（别名+SSA+memref+闭包）",
+        "role": "stage"
+      },
+      {
+        "id": "s3",
+        "label": "S3 打分与起始集",
+        "role": "stage"
+      },
+      {
+        "id": "s4",
+        "label": "S4 贪心相邻合并循环（链式+图同步）",
+        "role": "stage"
+      },
+      {
+        "id": "s5",
+        "label": "S5 tryMerge 合法性判定与 gap 搬迁",
+        "role": "stage"
+      },
+      {
+        "id": "s6",
+        "label": "S6 物化：mergeNoBetween / mergeNoMemory",
+        "role": "stage"
+      },
+      {
+        "id": "st1",
+        "label": "vfs 序列",
+        "role": "state"
+      },
+      {
+        "id": "st2",
+        "label": "allDepsClosure 闭包",
+        "role": "state"
+      },
+      {
+        "id": "st3",
+        "label": "VFDependencyGraph",
+        "role": "state"
+      }
+    ],
+    "edges": [
+      {
+        "from": "s1",
+        "to": "s2"
+      },
+      {
+        "from": "s2",
+        "to": "s3"
+      },
+      {
+        "from": "s3",
+        "to": "s4"
+      },
+      {
+        "from": "s4",
+        "to": "s5",
+        "label": "每对候选"
+      },
+      {
+        "from": "s5",
+        "to": "s6",
+        "label": "闸门全过"
+      },
+      {
+        "from": "s5",
+        "to": "s4",
+        "label": "拒绝→下一对",
+        "role": "reject"
+      },
+      {
+        "from": "s6",
+        "to": "s4",
+        "label": "合并结果续链",
+        "role": "chain"
+      },
+      {
+        "from": "st1",
+        "to": "s4",
+        "role": "state-use"
+      },
+      {
+        "from": "st2",
+        "to": "s5",
+        "role": "state-use"
+      },
+      {
+        "from": "st3",
+        "to": "s4",
+        "role": "state-use"
+      },
+      {
+        "from": "s6",
+        "to": "st2",
+        "label": "patchCalls 同步",
+        "role": "state-update"
+      },
+      {
+        "from": "s6",
+        "to": "st3",
+        "label": "mergeNodes 同步",
+        "role": "state-update"
+      }
+    ]
+  }
+}
