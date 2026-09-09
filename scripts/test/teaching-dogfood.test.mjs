@@ -138,8 +138,17 @@ test('generic layer source contains no subject-specific concepts', () => {
     // T2 consumer layer: preflight gate + presentation-side tooling
     join(repoRoot, 'scripts', 'preflight-handoff.mjs'),
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'scripts', 'spec_to_diagram.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'scripts', 'make_excalidraw_diagram.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'scripts', 'check_diagram_geometry.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'references', 'quarto-content-semantics.md'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'diagrams', 'pipeline.excalidraw'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'diagrams', 'algorithm.excalidraw'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'diagrams', 'dependency.excalidraw'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'diagrams', 'legality.excalidraw'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'slides.qmd'),
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'validate_manifest.py'),
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'check_project.py'),
+    join(repoRoot, 'skills', 'compiler-architecture-presentation', 'assets', 'quarto-project-template', 'scripts', 'check_diagram_geometry.py'),
     join(repoRoot, 'skills', 'compiler-architecture-presentation', 'SKILL.md'),
   ]
   const banned = /MergeVecScope|AutoVectorizeV2|FlattenOps|RegBase|HFusion|HIVM|tryMerge|mergeLevel|bufferiz/i

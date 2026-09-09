@@ -7,10 +7,16 @@ format:
       data-background-color: "#ffffff"
 ---
 
-## 为什么需要这个 Pass？
+<!-- Subject-adaptive skeleton: choose slide roles from the handoff storyline
+     (or your raw evidence story) — never force a pass narrative onto a class,
+     algorithm, or subsystem. Canonical QMD forms live in
+     references/quarto-content-semantics.md. Delete sections that do not apply;
+     keep roughly 8–12 slides and split content rather than shrinking text. -->
+
+## 为什么需要它？
 
 ::: {.claim}
-用一句中文说清楚：它优化了什么，或修复了什么。
+用一句中文说清楚：它解决了什么问题，或改变了什么行为。
 :::
 
 ::: columns
@@ -25,69 +31,47 @@ format:
 :::
 :::
 
-## Pass 在哪里执行？
+::: footer
+证据：`src/example.cpp:120-210` · EV-013
+:::
+
+## 全景图
 
 ![](diagrams/pipeline.svg){.diagram .diagram-wide}
 
-## 合并前 / 后
+## 并列能力 / 状态对比（真实列表，不是 `·` 连接的段落）
 
-::: columns
-::: {.column width="50%"}
-### Before · 示意
-```mlir
-// before
-...
-```
-:::
-::: {.column width="50%"}
-### After · 示意
-```mlir
-// after
-...
-```
-:::
+::: {.good}
+**✔ 支持**
+
+- 能力一（含链式场景）
+- 能力二
 :::
 
-## 核心流程
+::: {.danger}
+**✘ 不支持 / 设计拒绝**
+
+- 原因一
+- 原因二
+:::
+
+::: footer
+证据：`src/example.cpp:534-629` · EV-006 ~ EV-010
+:::
+
+## 核心机制
 
 ![](diagrams/algorithm.svg){.diagram}
 
-## 依赖模型
-
-![](diagrams/dependency.svg){.diagram}
-
-## 合法性与边界
+## 关键决策 / 决策树
 
 ![](diagrams/legality.svg){.diagram}
 
-## 主要缺陷
+## 主要风险
 
 | 问题 | 证据 | 后果 | 优先级 |
 |---|---|---|---|
 | 示例风险 | 观察到的实现行为 | 潜在失败模式 | **P0** |
-
-## 改进建议
-
-::: columns
-::: {.column width="33%"}
-### P0 · 正确性
-
-- 改动
-- 验证
-:::
-::: {.column width="33%"}
-### P1 · 稳健性
-
-- 改动
-- 验证
-:::
-::: {.column width="33%"}
-### P2 · 覆盖 / 收益
-
-- 改动
-- 度量
-:::
-:::
 
 ## 总结
 

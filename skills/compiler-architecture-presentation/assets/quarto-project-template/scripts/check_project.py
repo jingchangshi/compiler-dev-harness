@@ -20,6 +20,18 @@ Three modes, selected by what the project contains (Phase T2):
 
 Structural checks in every mode: core files exist, no visible generator text,
 referenced images exist.
+
+Quarto content-semantics checks in every mode (Phase T5, see
+references/quarto-content-semantics.md in the skill):
+
+  C1  `.footnote[...]` is forbidden — Pandoc bracket syntax renders literally
+      in Quarto Reveal.js; slide-level evidence uses the `::: footer` div.
+  C2  a paragraph joining ≥ 3 parallel items with `·` separators is a
+      mis-rendered list — one `- ` item per element instead.
+
+Diagram geometry checks in every mode (Phase T5): every `diagrams/*.excalidraw`
+is validated by check_diagram_geometry.py (node overlap, edge-through-node,
+aspect ratio, projected text size, label overflow).
 """
 from pathlib import Path
 import re
@@ -44,6 +56,97 @@ for img in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", qmd):
     p = root / img.split("{", 1)[0].strip()
     if not p.exists():
         errors.append(f"missing referenced image: {img}")
+
+# ── C1: forbid Pandoc bracket footnote syntax ────────────────────────────────
+for i, line in enumerate(qmd.splitlines(), 1):
+    if ".footnote[" in line:
+        errors.append(f"slides.qmd:{i}: .footnote[...] is not Quarto syntax — "
+                      "use the ::: footer div (quarto-content-semantics.md §1)")
+        break
+
+# ── C2: `·`-separated prose instead of a real list ──────────────────────────
+def is_skipped(line: str) -> bool:
+    s = line.strip()
+    if not s or s.startswith(("|", "#", ":::", "```", "- ", "* ", "> ")):
+        return True
+    if re.match(r"^\d+\.\s", s):
+        return True
+    return False
+
+paragraph: list = []
+paragraph_start = 0
+
+def check_separators(cleaned, where):
+    """A paragraph joining parallel items with `·` renders as prose, not a
+    list. ≥3 separators = several parallel items crammed into one paragraph
+    (error); exactly 2 usually is one too (warning)."""
+    n = cleaned.count("·")
+    if n >= 3:
+        errors.append(
+            f"slides.qmd:{where}: paragraph joins {n} parallel items "
+            "with '·' — use one '- ' list item per element "
+            "(quarto-content-semantics.md §2)")
+    elif n == 2:
+        warnings.append(
+            f"slides.qmd:{where}: two '·' separators in prose — if these are "
+            "parallel items, use a real '- ' list")
+
+def flush(lines, start):
+    if not lines:
+        return
+    joined = "\n".join(lines)
+    # strip inline code spans and emphasis before counting separators
+    cleaned = re.sub(r"`[^`]*`", " ", joined)
+    check_separators(cleaned, start)
+
+def check_list_item(line, i):
+    """A single `- ` item carrying multiple `·` separators is several items
+    crammed into one — same failure mode as the prose form."""
+    cleaned = re.sub(r"`[^`]*`", " ", line)
+    check_separators(cleaned, i)
+
+qmd_lines = qmd.splitlines()
+# YAML frontmatter: an opening `---` on line 1 closes at the next `---`
+start_at = 2 if (qmd_lines and qmd_lines[0].strip() == "---") else 1
+in_frontmatter = start_at == 2
+in_code = False
+for i, line in enumerate(qmd_lines[start_at - 1:], start_at):
+    s = line.strip()
+    if in_frontmatter:
+        if s == "---":
+            in_frontmatter = False
+        continue
+    if s.startswith("```"):
+        in_code = not in_code
+        flush(paragraph, paragraph_start)
+        paragraph = []
+        continue
+    if in_code or s == "" or is_skipped(line):
+        flush(paragraph, paragraph_start)
+        paragraph = []
+        if s.startswith("- ") or s.startswith("* "):
+            check_list_item(line, i)
+        continue
+    if not paragraph:
+        paragraph_start = i
+    paragraph.append(line)
+flush(paragraph, paragraph_start)
+
+# ── diagram geometry (T5) ────────────────────────────────────────────────────
+geometry_checker = root / "scripts" / "check_diagram_geometry.py"
+diagrams = root / "diagrams"
+if geometry_checker.is_file() and diagrams.is_dir() and any(diagrams.glob("*.excalidraw")):
+    result = subprocess.run([sys.executable, str(geometry_checker),
+                             "--project", str(root)],
+                            capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout.strip())
+    if result.returncode != 0:
+        errors.extend(line.replace("ERROR: ", "") for line in result.stderr.splitlines()
+                      if line.startswith("ERROR:"))
+elif not geometry_checker.is_file() and diagrams.is_dir() and any(diagrams.glob("*.excalidraw")):
+    warnings.append("scripts/check_diagram_geometry.py missing — re-scaffold or copy it "
+                    "from the presentation skill template to enable geometry QA")
 
 manifest = root / "presentation-manifest.json"
 sections = root / "required_sections.txt"

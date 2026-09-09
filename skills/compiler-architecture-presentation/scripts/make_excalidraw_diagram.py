@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Create a simple Excalidraw source plus same-layout SVG fallback from a JSON spec.
+"""Create an Excalidraw source plus same-layout SVG fallback from a JSON spec.
 
 The SVG fallback is deterministic and intended for embedding in offline HTML decks.
 The .excalidraw file remains editable in Excalidraw.
+
+Phase T5 rendering contract:
+- node text wraps to the box (multi-line, same wrap rule as spec_to_diagram.py);
+- edges may carry `waypoints` (list of [x, y] intermediate points) and are then
+  rendered as polylines/elbows instead of straight 2-point lines;
+- the arrow enters/exits each box on the side facing the adjacent waypoint
+  (or the other box, for straight edges).
 """
 from __future__ import annotations
 import argparse, json, math
@@ -26,6 +33,23 @@ def latin_len(text: str) -> int:
 def estimate_width(text: str, font_size: int = 20) -> float:
     return cjk_len(text) * font_size + latin_len(text) * font_size * 0.55
 
+def wrap_lines(text: str, max_width: float, font_size: int = 18) -> list[str]:
+    """Greedy width-aware wrap — must match spec_to_diagram.py's rule so the
+    layout reserves the same box the renderer draws."""
+    lines = []
+    for raw in str(text).split("\n"):
+        cur, cur_w = "", 0.0
+        for ch in raw:
+            cw = font_size if ord(ch) > 0x2E7F else font_size * 0.5
+            if cur and cur_w + cw > max_width:
+                lines.append(cur)
+                cur, cur_w = ch, cw
+            else:
+                cur += ch
+                cur_w += cw
+        lines.append(cur)
+    return lines or [""]
+
 def element_base(eid, typ, x, y, w, h, stroke, bg, stroke_width=2):
     return {
         "id": eid, "type": typ, "x": x, "y": y, "width": w, "height": h,
@@ -48,13 +72,30 @@ def make_text(eid, text, x, y, w, h, color="#222222", font_size=20, align="cente
     obj.pop("roundness", None)
     return obj
 
-def make_arrow(eid, x1, y1, x2, y2, color="#555555", dashed=False):
-    w, h = x2-x1, y2-y1
-    obj = element_base(eid, "arrow", x1, y1, w, h, color, "transparent", 2)
+def anchor(a, b, side_hint=None):
+    """Anchor point on box a's edge facing b (or an explicit anchor center)."""
+    acx, acy = a["x"] + a["_w"] / 2, a["y"] + a["_h"] / 2
+    bcx, bcy = b[0], b[1]
+    dx, dy = bcx - acx, bcy - acy
+    if abs(dx) >= abs(dy):
+        if dx >= 0:
+            return a["x"] + a["_w"], acy
+        return a["x"], acy
+    if dy >= 0:
+        return acx, a["y"] + a["_h"]
+    return acx, a["y"]
+
+def make_arrow(eid, pts, color="#555555", dashed=False):
+    """pts: absolute [[x, y], ...] polyline; first point is the anchor."""
+    x0, y0 = pts[0]
+    rel = [[p[0] - x0, p[1] - y0] for p in pts]
+    w = max(p[0] for p in rel) - min(p[0] for p in rel)
+    h = max(p[1] for p in rel) - min(p[1] for p in rel)
+    obj = element_base(eid, "arrow", x0, y0, w, h, color, "transparent", 2)
     obj.update({
-        "points": [[0,0],[w,h]], "lastCommittedPoint": None,
+        "points": rel, "lastCommittedPoint": None,
         "startBinding": None, "endBinding": None, "startArrowhead": None, "endArrowhead": "arrow",
-        "elbowed": False,
+        "elbowed": len(pts) > 2,
     })
     obj["strokeStyle"] = "dashed" if dashed else "solid"
     obj.pop("roundness", None)
@@ -71,6 +112,12 @@ def svg_text(x, y, w, h, text, font_size, color="#222", align="middle"):
         spans.append(f'<text x="{tx:.1f}" y="{start_y+i*font_size*1.25:.1f}" text-anchor="{anchor}" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="{font_size}" fill="{color}">{escape(line)}</text>')
     return "\n".join(spans)
 
+def svg_polyline(pts, color, dashed):
+    dash=' stroke-dasharray="8 6"' if dashed else ''
+    ptstr = " ".join(f"{p[0]:.1f},{p[1]:.1f}" for p in pts)
+    return (f'<polyline points="{ptstr}" fill="none" stroke="{color}" '
+            f'stroke-width="2.5" stroke-linejoin="round"{dash} marker-end="url(#arrow)"/>')
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("spec", type=Path)
@@ -81,46 +128,47 @@ def main():
     els=[]; body=[]
     content_max_w=spec.get("width", 1200); content_max_h=spec.get("height", 500)
     for node in spec.get("nodes",[]):
-        text=node["text"]; fs=node.get("fontSize",20); pad=node.get("padding",36)
-        minw=max(160, cjk_len(text)*18 + latin_len(text)*9 + pad)
-        w=max(node.get("width",0),minw); h=node.get("height",60)
+        text=node["text"]; fs=node.get("fontSize",18); pad=node.get("padding",36)
+        lines = node.get("lines") or wrap_lines(text, max(node.get("width", 0) - 20, 120), fs)
+        single = "\n".join(lines)
+        minw = max(160, max((estimate_width(ln, fs) for ln in lines), default=0) + pad)
+        w=max(node.get("width",0),minw); h=max(node.get("height",0), len(lines)*fs*1.25+16)
         x=node["x"]; y=node["y"]; color=node.get("color","neutral")
         stroke,bg=PALETTE[color]
         rid=node["id"]
         els.append(element_base(rid,"rectangle",x,y,w,h,stroke,bg))
-        els.append(make_text(rid+"_text",text,x+10,y+8,w-20,h-16,"#222222",fs,"center"))
+        els.append(make_text(rid+"_text",single,x+10,y+8,w-20,h-16,"#222222",fs,"center"))
         body.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="5" fill="{bg}" stroke="{stroke}" stroke-width="2"/>')
-        body.append(svg_text(x+10,y+8,w-20,h-16,text,fs,"#222","center"))
+        body.append(svg_text(x+10,y+8,w-20,h-16,single,fs,"#222","center"))
         node["_w"]=w; node["_h"]=h
         # real content extents: rendered boxes are measured from label text and
-        # can exceed the layout's assumed NODE_W/NODE_H grid
+        # can exceed the layout's assumed grid
         content_max_w=max(content_max_w, x+w); content_max_h=max(content_max_h, y+h)
     lookup={n["id"]:n for n in spec.get("nodes",[])}
     for i,edge in enumerate(spec.get("edges",[])):
         a=lookup[edge["from"]]; b=lookup[edge["to"]]
-        acx=a["x"]+a["_w"]/2; acy=a["y"]+a["_h"]/2
-        bcx=b["x"]+b["_w"]/2; bcy=b["y"]+b["_h"]/2
-        dx=bcx-acx; dy=bcy-acy
-        if abs(dx) >= abs(dy):
-            if dx >= 0:
-                x1=a["x"]+a["_w"]; y1=acy; x2=b["x"]; y2=bcy
-            else:
-                x1=a["x"]; y1=acy; x2=b["x"]+b["_w"]; y2=bcy
-        else:
-            if dy >= 0:
-                x1=acx; y1=a["y"]+a["_h"]; x2=bcx; y2=b["y"]
-            else:
-                x1=acx; y1=a["y"]; x2=bcx; y2=b["y"]+b["_h"]
+        wps=[list(p) for p in (edge.get("waypoints") or [])]
+        start=anchor(a, wps[0] if wps else [b["x"]+b["_w"]/2, b["y"]+b["_h"]/2])
+        end=anchor(b, wps[-1] if wps else [a["x"]+a["_w"]/2, a["y"]+a["_h"]/2])
+        pts=[list(start)] + wps + [list(end)]
         color=PALETTE.get(edge.get("color","neutral"), PALETTE["neutral"])[0]
-        els.append(make_arrow(f"edge_{i}",x1,y1,x2,y2,color,edge.get("dashed",False)))
-        dash=' stroke-dasharray="8 6"' if edge.get("dashed",False) else ''
-        body.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="2.5"{dash} marker-end="url(#arrow)"/>')
-        content_max_w=max(content_max_w, x1, x2); content_max_h=max(content_max_h, y1, y2)
+        dashed=bool(edge.get("dashed", False))
+        els.append(make_arrow(f"edge_{i}",pts,color,dashed))
+        body.append(svg_polyline(pts,color,dashed))
+        for p in pts:
+            content_max_w=max(content_max_w, p[0]); content_max_h=max(content_max_h, p[1])
         if edge.get("label"):
+            # label sits at the midpoint of the longest segment
+            seg, best = None, -1.0
+            for s0, s1 in zip(pts, pts[1:]):
+                length = math.hypot(s1[0]-s0[0], s1[1]-s0[1])
+                if length > best:
+                    best, seg = length, (s0, s1)
+            (x1,y1),(x2,y2)=seg
             mx=(x1+x2)/2; my=(y1+y2)/2-10
-            label=edge["label"]; fs=edge.get("fontSize",16); lw=max(80, estimate_width(label,fs)+18)
-            body.append(f'<rect x="{mx-lw/2:.1f}" y="{my-fs:.1f}" width="{lw:.1f}" height="{fs*1.45:.1f}" fill="#fff"/>')
-            body.append(svg_text(mx-lw/2,my-fs,lw,fs*1.45,label,fs,"#555","center"))
+            label=edge["label"]; fs2=edge.get("fontSize",16); lw=max(80, estimate_width(label,fs2)+18)
+            body.append(f'<rect x="{mx-lw/2:.1f}" y="{my-fs2:.1f}" width="{lw:.1f}" height="{fs2*1.45:.1f}" fill="#fff"/>')
+            body.append(svg_text(mx-lw/2,my-fs2,lw,fs2*1.45,label,fs2,"#555","center"))
     margin=24
     W=content_max_w+margin; H=content_max_h+margin
     svg=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W:.0f} {H:.0f}" width="100%" height="100%">',

@@ -139,6 +139,23 @@ $font-family-monospace: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mon
   line-height: 1.25;
 }
 
+/* Slide-level evidence footer (quarto-content-semantics.md §1).
+   Usage: last block of a slide —
+   ::: footer
+   证据：`src/foo.cpp:120-210` · EV-013
+   :::                                                        */
+.reveal .footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: .1em 0 0;
+  color: #777;
+  font-size: .55em;
+  line-height: 1.25;
+  border-top: 1px solid #e3e3e3;
+}
+
 .reveal img {
   border: 0;
   box-shadow: none;

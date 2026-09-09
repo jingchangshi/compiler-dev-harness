@@ -1,0 +1,692 @@
+{
+  "artifact": "t5_regression_fixture",
+  "source": "merge-vec-scope-slides dogfood deck (rendered, failed QA 2026-09-09)",
+  "visuals": [
+    {
+      "id": "V1",
+      "kind": "pipeline",
+      "title": "RegBase bufferizationPipeline 中的两个合并窗口",
+      "purpose": "交代 pass 在整条管线中的位置与前后 IR 表示边界（tensor → memref）",
+      "nodes": [
+        {
+          "id": "outline",
+          "label": "AutoVectorizeV2 + OutlineVectorFunction（产生 VF）",
+          "role": "upstream"
+        },
+        {
+          "id": "l1",
+          "label": "hfusion-merge-vf L1（merge-level=1）",
+          "role": "subject-window-1"
+        },
+        {
+          "id": "simplify",
+          "label": "hfusion-simplify-vf-arg",
+          "role": "downstream"
+        },
+        {
+          "id": "copyins",
+          "label": "TensorCopyInsertion",
+          "role": "context"
+        },
+        {
+          "id": "bufferize",
+          "label": "OneShotBufferize",
+          "role": "representation-boundary"
+        },
+        {
+          "id": "l2",
+          "label": "hfusion-merge-vf L2（merge-level=2）",
+          "role": "subject-window-2"
+        },
+        {
+          "id": "canon",
+          "label": "canonicalization + ConvertToHIVMOp",
+          "role": "downstream"
+        }
+      ],
+      "edges": [
+        {
+          "from": "outline",
+          "to": "l1",
+          "label": "tensor 级 VF"
+        },
+        {
+          "from": "l1",
+          "to": "simplify"
+        },
+        {
+          "from": "simplify",
+          "to": "copyins"
+        },
+        {
+          "from": "copyins",
+          "to": "bufferize"
+        },
+        {
+          "from": "bufferize",
+          "to": "l2",
+          "label": "memref 级 VF"
+        },
+        {
+          "from": "l2",
+          "to": "canon"
+        }
+      ],
+      "groups": [
+        {
+          "id": "pre",
+          "label": "bufferize 之前（表示：tensor）",
+          "members": [
+            "outline",
+            "l1",
+            "simplify",
+            "copyins"
+          ]
+        },
+        {
+          "id": "post",
+          "label": "bufferize 之后（表示：memref）",
+          "members": [
+            "l2",
+            "canon"
+          ]
+        }
+      ],
+      "ordering": [
+        "outline",
+        "l1",
+        "simplify",
+        "copyins",
+        "bufferize",
+        "l2",
+        "canon"
+      ]
+    },
+    {
+      "id": "V2",
+      "kind": "flowchart",
+      "title": "pass 内部六阶段与三份私有状态",
+      "purpose": "机制总览：数据如何从分析流向决策再到改写",
+      "nodes": [
+        {
+          "id": "s1",
+          "label": "S1 收集并按调用序排列 VF",
+          "role": "stage"
+        },
+        {
+          "id": "s2",
+          "label": "S2 依赖建模（别名+SSA+memref+闭包）",
+          "role": "stage"
+        },
+        {
+          "id": "s3",
+          "label": "S3 打分与起始集",
+          "role": "stage"
+        },
+        {
+          "id": "s4",
+          "label": "S4 贪心相邻合并循环（链式+图同步）",
+          "role": "stage"
+        },
+        {
+          "id": "s5",
+          "label": "S5 tryMerge 合法性判定与 gap 搬迁",
+          "role": "stage"
+        },
+        {
+          "id": "s6",
+          "label": "S6 物化：mergeNoBetween / mergeNoMemory",
+          "role": "stage"
+        },
+        {
+          "id": "st1",
+          "label": "vfs 序列",
+          "role": "state"
+        },
+        {
+          "id": "st2",
+          "label": "allDepsClosure 闭包",
+          "role": "state"
+        },
+        {
+          "id": "st3",
+          "label": "VFDependencyGraph",
+          "role": "state"
+        }
+      ],
+      "edges": [
+        {
+          "from": "s1",
+          "to": "s2"
+        },
+        {
+          "from": "s2",
+          "to": "s3"
+        },
+        {
+          "from": "s3",
+          "to": "s4"
+        },
+        {
+          "from": "s4",
+          "to": "s5",
+          "label": "每对候选"
+        },
+        {
+          "from": "s5",
+          "to": "s6",
+          "label": "闸门全过"
+        },
+        {
+          "from": "s5",
+          "to": "s4",
+          "label": "拒绝→下一对",
+          "role": "reject"
+        },
+        {
+          "from": "s6",
+          "to": "s4",
+          "label": "合并结果续链",
+          "role": "chain"
+        },
+        {
+          "from": "st1",
+          "to": "s4",
+          "role": "state-use"
+        },
+        {
+          "from": "st2",
+          "to": "s5",
+          "role": "state-use"
+        },
+        {
+          "from": "st3",
+          "to": "s4",
+          "role": "state-use"
+        },
+        {
+          "from": "s6",
+          "to": "st2",
+          "label": "patchCalls 同步",
+          "role": "state-update"
+        },
+        {
+          "from": "s6",
+          "to": "st3",
+          "label": "mergeNodes 同步",
+          "role": "state-update"
+        }
+      ]
+    },
+    {
+      "id": "V3",
+      "kind": "before_after",
+      "title": "dependency-update 实例：合并前后调用形态（实测 IR）",
+      "purpose": "用真实 IR 展示可观察输出",
+      "nodes": [
+        {
+          "id": "b1",
+          "label": "call @producer_vf_0(%in0)（单结果）",
+          "role": "before"
+        },
+        {
+          "id": "b2",
+          "label": "call @zero_vf_0(%in1)（单结果）",
+          "role": "before"
+        },
+        {
+          "id": "b3",
+          "label": "call @reduce_a_vf_0(%zero)",
+          "role": "before"
+        },
+        {
+          "id": "b4",
+          "label": "call @reduce_b_vf_0(%zero)",
+          "role": "before"
+        },
+        {
+          "id": "a1",
+          "label": "%0:2 = call @producer_merged_vf_0(%in0, %in1)",
+          "role": "after"
+        },
+        {
+          "id": "a2",
+          "label": "%1:2 = call @reduce_a_merged_vf_0(%0#1, %0#1)",
+          "role": "after"
+        }
+      ],
+      "edges": [
+        {
+          "from": "b1",
+          "to": "a1",
+          "label": "合并",
+          "role": "transform"
+        },
+        {
+          "from": "b2",
+          "to": "a1",
+          "label": "合并",
+          "role": "transform"
+        },
+        {
+          "from": "b3",
+          "to": "a2",
+          "label": "合并",
+          "role": "transform"
+        },
+        {
+          "from": "b4",
+          "to": "a2",
+          "label": "合并",
+          "role": "transform"
+        },
+        {
+          "from": "a1",
+          "to": "a2",
+          "label": "%0#1 复用两次",
+          "role": "data"
+        }
+      ],
+      "groups": [
+        {
+          "id": "before",
+          "label": "合并前（4 个调用）",
+          "members": [
+            "b1",
+            "b2",
+            "b3",
+            "b4"
+          ]
+        },
+        {
+          "id": "after",
+          "label": "合并后（2 个调用，均带 ptc_simdvf）",
+          "members": [
+            "a1",
+            "a2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "V4",
+      "kind": "decision_tree",
+      "title": "tryMerge 闸门树与搬迁决策",
+      "purpose": "合法性一票否决链 + 三选一搬迁",
+      "nodes": [
+        {
+          "id": "q1",
+          "label": "调用对同块相邻？",
+          "role": "gate"
+        },
+        {
+          "id": "q2",
+          "label": "extract-kind 一致（非 Mixed）？",
+          "role": "gate"
+        },
+        {
+          "id": "q3",
+          "label": "同父 region？",
+          "role": "gate"
+        },
+        {
+          "id": "q4",
+          "label": "gap 无 SyncBlockSet/Wait？",
+          "role": "gate"
+        },
+        {
+          "id": "q5",
+          "label": "钉住 op 不喂 call2？",
+          "role": "gate"
+        },
+        {
+          "id": "mv",
+          "label": "间隔 op 搬迁判定",
+          "role": "branch"
+        },
+        {
+          "id": "mva",
+          "label": "整体后移（call2 后）",
+          "role": "outcome"
+        },
+        {
+          "id": "mvb",
+          "label": "整体前移（call1 前）",
+          "role": "outcome"
+        },
+        {
+          "id": "mvs",
+          "label": "SplitMove 拆两半",
+          "role": "outcome"
+        },
+        {
+          "id": "l1gap",
+          "label": "L1：gap 必须清空",
+          "role": "gate"
+        },
+        {
+          "id": "nb",
+          "label": "mergeNoBetween（gap 空）",
+          "role": "strategy"
+        },
+        {
+          "id": "nm",
+          "label": "mergeNoMemory（gap 非空，L2）",
+          "role": "strategy"
+        },
+        {
+          "id": "rej",
+          "label": "拒绝：跳过该对",
+          "role": "reject"
+        }
+      ],
+      "edges": [
+        {
+          "from": "q1",
+          "to": "q2",
+          "label": "是"
+        },
+        {
+          "from": "q1",
+          "to": "rej",
+          "label": "否",
+          "role": "reject"
+        },
+        {
+          "from": "q2",
+          "to": "q3",
+          "label": "是"
+        },
+        {
+          "from": "q2",
+          "to": "rej",
+          "label": "否",
+          "role": "reject"
+        },
+        {
+          "from": "q3",
+          "to": "q4",
+          "label": "是"
+        },
+        {
+          "from": "q3",
+          "to": "rej",
+          "label": "否",
+          "role": "reject"
+        },
+        {
+          "from": "q4",
+          "to": "q5",
+          "label": "是"
+        },
+        {
+          "from": "q4",
+          "to": "rej",
+          "label": "否",
+          "role": "reject"
+        },
+        {
+          "from": "q5",
+          "to": "mv",
+          "label": "是"
+        },
+        {
+          "from": "q5",
+          "to": "rej",
+          "label": "否",
+          "role": "reject"
+        },
+        {
+          "from": "mv",
+          "to": "mva",
+          "label": "无 call2 依赖的 memOp"
+        },
+        {
+          "from": "mv",
+          "to": "mvb",
+          "label": "无依赖 call1 的 memOp"
+        },
+        {
+          "from": "mv",
+          "to": "mvs",
+          "label": "两者皆有"
+        },
+        {
+          "from": "mvs",
+          "to": "rej",
+          "label": "L1 双向依赖 op / L2 after 组喂 call2",
+          "role": "reject"
+        },
+        {
+          "from": "mva",
+          "to": "l1gap",
+          "role": "proceed"
+        },
+        {
+          "from": "mvb",
+          "to": "l1gap",
+          "role": "proceed"
+        },
+        {
+          "from": "l1gap",
+          "to": "nb",
+          "label": "L1 通过 / L2 跳过此门"
+        },
+        {
+          "from": "l1gap",
+          "to": "rej",
+          "label": "L1 仍有可移动残留",
+          "role": "reject"
+        },
+        {
+          "from": "nb",
+          "to": "nm",
+          "label": "gap 非空（L2）",
+          "role": "alt"
+        }
+      ]
+    },
+    {
+      "id": "V5",
+      "kind": "dependency_graph",
+      "title": "worked-example 的依赖图演化与错合并防线",
+      "purpose": "展示 VFDependencyGraph 在链式合并中的同步作用",
+      "nodes": [
+        {
+          "id": "prod",
+          "label": "producer_vf",
+          "role": "vf"
+        },
+        {
+          "id": "zero",
+          "label": "zero_vf",
+          "role": "vf"
+        },
+        {
+          "id": "ra",
+          "label": "reduce_a_vf",
+          "role": "vf"
+        },
+        {
+          "id": "rb",
+          "label": "reduce_b_vf",
+          "role": "vf"
+        },
+        {
+          "id": "pm",
+          "label": "producer_merged_vf",
+          "role": "merged"
+        },
+        {
+          "id": "rm",
+          "label": "reduce_a_merged_vf",
+          "role": "merged"
+        },
+        {
+          "id": "x3",
+          "label": "第三次合并（被拒）",
+          "role": "rejected"
+        }
+      ],
+      "edges": [
+        {
+          "from": "ra",
+          "to": "zero",
+          "label": "依赖",
+          "role": "dep-before"
+        },
+        {
+          "from": "rb",
+          "to": "zero",
+          "label": "依赖",
+          "role": "dep-before"
+        },
+        {
+          "from": "prod",
+          "to": "zero",
+          "label": "合并（无依赖对）",
+          "role": "merge-1"
+        },
+        {
+          "from": "ra",
+          "to": "rb",
+          "label": "合并（无依赖对）",
+          "role": "merge-2"
+        },
+        {
+          "from": "rm",
+          "to": "pm",
+          "label": "mergeNodes 继承的边",
+          "role": "inherited"
+        },
+        {
+          "from": "pm",
+          "to": "x3",
+          "label": "areRelated → 拒绝",
+          "role": "blocked"
+        },
+        {
+          "from": "rm",
+          "to": "x3",
+          "label": "areRelated → 拒绝",
+          "role": "blocked"
+        }
+      ],
+      "ordering": [
+        "prod",
+        "zero",
+        "ra",
+        "rb",
+        "pm",
+        "rm",
+        "x3"
+      ]
+    },
+    {
+      "id": "V6",
+      "kind": "comparison",
+      "title": "L1 vs L2 能力对比",
+      "purpose": "一档开关的两副面孔",
+      "nodes": [
+        {
+          "id": "l1",
+          "label": "merge-level=1（默认）",
+          "role": "left"
+        },
+        {
+          "id": "l2",
+          "label": "merge-level=2",
+          "role": "right"
+        }
+      ],
+      "edges": [],
+      "groups": [
+        {
+          "id": "row-start",
+          "label": "起始集：0 分 VF ｜ 全部 VF",
+          "members": [
+            "l1",
+            "l2"
+          ]
+        },
+        {
+          "id": "row-gate",
+          "label": "相关对：areRelated 拒绝 ｜ 允许",
+          "members": [
+            "l1",
+            "l2"
+          ]
+        },
+        {
+          "id": "row-gap",
+          "label": "间隔 op：全部搬走+gap 清空 ｜ 折叠进函数体",
+          "members": [
+            "l1",
+            "l2"
+          ]
+        },
+        {
+          "id": "row-ir",
+          "label": "运行窗口：bufferize 前（tensor） ｜ bufferize 后（memref）",
+          "members": [
+            "l1",
+            "l2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "V7",
+      "kind": "comparison",
+      "title": "已知风险矩阵 P1-P4 / N3",
+      "purpose": "风险一览与改码前检查单",
+      "nodes": [
+        {
+          "id": "p1",
+          "label": "P1 多调用者 VF 悬空符号（正确性）",
+          "role": "risk"
+        },
+        {
+          "id": "p2",
+          "label": "P2 两路径属性不对称（可维护性）",
+          "role": "risk"
+        },
+        {
+          "id": "p3",
+          "label": "P3 同块依赖欠覆盖（正确性）",
+          "role": "risk"
+        },
+        {
+          "id": "p4",
+          "label": "P4 链式合并超 merge-vf-num-limit（性能）",
+          "role": "risk"
+        },
+        {
+          "id": "n3",
+          "label": "N3 hivmc 镜像缺新守卫（工程同步）",
+          "role": "risk"
+        }
+      ],
+      "edges": [],
+      "groups": [
+        {
+          "id": "cat-correct",
+          "label": "正确性：P1 P3",
+          "members": [
+            "p1",
+            "p3"
+          ]
+        },
+        {
+          "id": "cat-maint",
+          "label": "可维护/性能/工程：P2 P4 N3",
+          "members": [
+            "p2",
+            "p4",
+            "n3"
+          ]
+        }
+      ]
+    }
+  ]
+}
