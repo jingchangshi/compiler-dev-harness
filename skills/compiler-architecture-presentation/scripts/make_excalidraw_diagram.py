@@ -9,7 +9,14 @@ Phase T5 rendering contract:
 - edges may carry `waypoints` (list of [x, y] intermediate points) and are then
   rendered as polylines/elbows instead of straight 2-point lines;
 - the arrow enters/exits each box on the side facing the adjacent waypoint
-  (or the other box, for straight edges).
+  (or the other box, for straight edges);
+- linear elements are emitted in canonical Excalidraw form (x/y is the top-left
+  of the points' bounding box, every point a non-negative offset from it), so
+  consumers that derive a frame from declared element bounds cannot crop a route;
+- the SVG frame is normalized to the conventional `0 0 W H` origin: all content
+  is translated so it starts at (margin, margin). A negative viewBox origin is
+  legal SVG but consumers that assume the origin is (0,0) crop exactly the
+  elements routed through the outer corridors.
 """
 from __future__ import annotations
 import argparse, json, math
@@ -86,11 +93,20 @@ def anchor(a, b, side_hint=None):
     return acx, a["y"]
 
 def make_arrow(eid, pts, color="#555555", dashed=False):
-    """pts: absolute [[x, y], ...] polyline; first point is the anchor."""
-    x0, y0 = pts[0]
+    """pts: absolute [[x, y], ...] polyline; first point is the anchor.
+
+    Emitted in canonical Excalidraw form: x/y is the top-left of the points'
+    bounding box and each point is a non-negative offset from it. Excalidraw
+    itself derives linear-element bounds from the points, but consumers that
+    trust `x + width` would otherwise frame a left/up-going route as if it ran
+    to the right/down and crop it.
+    """
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, y0 = min(xs), min(ys)
     rel = [[p[0] - x0, p[1] - y0] for p in pts]
-    w = max(p[0] for p in rel) - min(p[0] for p in rel)
-    h = max(p[1] for p in rel) - min(p[1] for p in rel)
+    w = max(xs) - x0
+    h = max(ys) - y0
     obj = element_base(eid, "arrow", x0, y0, w, h, color, "transparent", 2)
     obj.update({
         "points": rel, "lastCommittedPoint": None,
@@ -118,6 +134,26 @@ def svg_polyline(pts, color, dashed):
     return (f'<polyline points="{ptstr}" fill="none" stroke="{color}" '
             f'stroke-width="2.5" stroke-linejoin="round"{dash} marker-end="url(#arrow)"/>')
 
+def render_body(prims, dx, dy):
+    """Serialize collected drawing primitives, translated by (dx, dy) so the
+    figure starts at the frame margin instead of wherever the layout placed it."""
+    out=[]
+    for kind, *rest in prims:
+        if kind=="rect":
+            x,y,w,h,fill,stroke,rx,sw=rest
+            attrs=f'x="{x+dx}" y="{y+dy}" width="{w}" height="{h}"'
+            if rx: attrs+=f' rx="{rx}"'
+            attrs+=f' fill="{fill}"'
+            if stroke: attrs+=f' stroke="{stroke}" stroke-width="{sw}"'
+            out.append(f'<rect {attrs}/>')
+        elif kind=="text":
+            x,y,w,h,text,fs,color,align=rest
+            out.append(svg_text(x+dx,y+dy,w,h,text,fs,color,align))
+        elif kind=="poly":
+            pts,color,dashed=rest
+            out.append(svg_polyline([(px+dx,py+dy) for px,py in pts],color,dashed))
+    return out
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("spec", type=Path)
@@ -125,7 +161,7 @@ def main():
     ap.add_argument("--svg", type=Path, required=True)
     args=ap.parse_args()
     spec=json.loads(args.spec.read_text(encoding="utf-8"))
-    els=[]; body=[]
+    els=[]; prims=[]
     # True content extents: every drawn element (boxes, arrow polylines, edge
     # label plates) contributes both its max AND min side. Routes may leave the
     # node grid (band gutters above/below, left-margin hops), so the frame is
@@ -146,8 +182,8 @@ def main():
         rid=node["id"]
         els.append(element_base(rid,"rectangle",x,y,w,h,stroke,bg))
         els.append(make_text(rid+"_text",single,x+10,y+8,w-20,h-16,"#222222",fs,"center"))
-        body.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="5" fill="{bg}" stroke="{stroke}" stroke-width="2"/>')
-        body.append(svg_text(x+10,y+8,w-20,h-16,single,fs,"#222","center"))
+        prims.append(("rect", x, y, w, h, bg, stroke, 5, 2))
+        prims.append(("text", x+10, y+8, w-20, h-16, single, fs, "#222", "center"))
         node["_w"]=w; node["_h"]=h
         span(x,y,x+w,y+h)
     lookup={n["id"]:n for n in spec.get("nodes",[])}
@@ -160,7 +196,7 @@ def main():
         color=PALETTE.get(edge.get("color","neutral"), PALETTE["neutral"])[0]
         dashed=bool(edge.get("dashed", False))
         els.append(make_arrow(f"edge_{i}",pts,color,dashed))
-        body.append(svg_polyline(pts,color,dashed))
+        prims.append(("poly", pts, color, dashed))
         for p in pts:
             span(p[0],p[1],p[0],p[1])
         if edge.get("label"):
@@ -173,16 +209,22 @@ def main():
             (x1,y1),(x2,y2)=seg
             mx=(x1+x2)/2; my=(y1+y2)/2-10
             label=edge["label"]; fs2=edge.get("fontSize",16); lw=max(80, estimate_width(label,fs2)+18)
-            body.append(f'<rect x="{mx-lw/2:.1f}" y="{my-fs2:.1f}" width="{lw:.1f}" height="{fs2*1.45:.1f}" fill="#fff"/>')
-            body.append(svg_text(mx-lw/2,my-fs2,lw,fs2*1.45,label,fs2,"#555","center"))
+            prims.append(("rect", mx-lw/2, my-fs2, lw, fs2*1.45, "#fff", None, 0, 0))
+            prims.append(("text", mx-lw/2, my-fs2, lw, fs2*1.45, label, fs2, "#555", "center"))
             span(mx-lw/2, my-fs2, mx+lw/2, my-fs2+fs2*1.45)
     # symmetric margin on ALL four sides so strokes, arrowheads, and routed
-    # connectors are never clipped by the SVG frame
+    # connectors are never clipped by the SVG frame; the frame is then
+    # normalized to the conventional (0,0) origin by translating every element,
+    # so consumers that assume a 0-origin viewBox cannot crop the content.
     margin=32
     min_x, max_x = extents[0] if extents[0][0] is not None else (0, 0)
     min_y, max_y = extents[1] if extents[1][0] is not None else (0, 0)
+    dx = margin - min_x; dy = margin - min_y
     W=(max_x-min_x)+2*margin; H=(max_y-min_y)+2*margin
-    svg=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x-margin:.0f} {min_y-margin:.0f} {W:.0f} {H:.0f}" width="100%" height="100%">',
+    for e in els:
+        e["x"] += dx; e["y"] += dy
+    body = render_body(prims, dx, dy)
+    svg=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W:.0f} {H:.0f}" width="{W:.0f}" height="{H:.0f}" preserveAspectRatio="xMidYMid meet">',
          '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>']
     svg.extend(body)
     svg.append('</svg>')
