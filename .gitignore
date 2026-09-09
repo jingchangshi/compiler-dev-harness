@@ -14,7 +14,7 @@ analysis/feedback/candidates/
 # presentations, and run state. Gitignored by design — normal use never dirties
 # the tracked harness tree. Curated fixtures stay in analysis/explanations/ and
 # analysis/presentations/ and are promoted by explicit developer action only.
-analysis/runtime/
+analysis/
 
 # Python bytecode cache
 __pycache__/
