@@ -31,6 +31,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 import { createHash } from 'node:crypto'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import {
   DEPTHS, AUDIENCE_QUESTIONS, validateBundle, computeReadiness, slugify,
 } from './scripts/teaching-schema.mjs'
@@ -864,6 +865,27 @@ function observedDocumentState(node, run, { observedNodes }) {
   }
 }
 
+/**
+ * Phase T5: run the deck project's own deterministic checker
+ * (scripts/check_project.py — structure, manifest coverage, Quarto content
+ * semantics, diagram geometry). Purely mechanical, bounded output; the check
+ * is part of the presentation node's truth so a physically broken deck can
+ * no longer count as done.
+ */
+function runPresentationChecker(projectDir) {
+  const checker = join(projectDir, 'scripts', 'check_project.py')
+  if (!existsSync(checker)) return { available: false }
+  try {
+    const r = spawnSync('python3', [checker], { cwd: projectDir, encoding: 'utf8', timeout: 120000 })
+    if (r.status === 0) return { available: true, ok: true }
+    const errs = String(r.stderr || r.stdout || '').split('\n')
+      .filter((l) => l.startsWith('ERROR:')).slice(0, 5)
+    return { available: true, ok: false, errors: errs.length > 0 ? errs : [`checker exited ${r.status}`] }
+  } catch (e) {
+    return { available: true, ok: false, errors: [`checker failed to run: ${e.message}`] }
+  }
+}
+
 function observedPresentationState(node, run, { catalog }) {
   const targetNode = node.deps[0]
   const targetPath = run.observed?.nodes?.[targetNode]?.composition?.bundle_path || run.observed?.nodes?.[targetNode]?.bundle?.bundle_path
@@ -879,12 +901,23 @@ function observedPresentationState(node, run, { catalog }) {
     return { state: 'needs_decision', reasons: ['multiple presentation manifests consumed this bundle — pick the current deck'], candidates: presentation.candidates }
   }
   if (presentation.handoff_hash_match && gate.verdict === 'CONSUMABLE') {
+    const checker = runPresentationChecker(presentation.project_dir)
+    if (checker.available && !checker.ok) {
+      return {
+        state: 'pending',
+        reasons: ['presentation checker failed — fix the deck (QMD semantics / diagram geometry), do not regenerate the story', ...checker.errors],
+        presentation_dir: presentation.project_dir,
+        manifest_path: presentation.manifest_path,
+        gate: gate.verdict, checker: 'fail',
+      }
+    }
     return {
       state: 'done',
       taken: 'reused',
       presentation_dir: presentation.project_dir,
       manifest_path: presentation.manifest_path,
       gate: gate.verdict,
+      checker: checker.available ? 'pass' : 'unavailable',
       reasons: [],
     }
   }
@@ -911,7 +944,7 @@ function deriveRunStatus(run, { catalog, resolutions, depth, repository, repoRoo
       query: node.query, observed_action: observed.taken, state: observed.state,
       deps: node.deps, parallelizable: node.parallelizable || false,
       bundle: observed.bundle, composition: observed.composition, doc_path: observed.doc_path,
-      presentation_dir: observed.presentation_dir, gate: observed.gate,
+      presentation_dir: observed.presentation_dir, gate: observed.gate, checker: observed.checker,
       reasons: observed.reasons || [], candidates: observed.candidates,
     })
   }
@@ -1248,11 +1281,34 @@ export function renderExplanation(bundleDir, { out, write = true } = {}) {
     push('')
     if (typeof d.canonical_example.initial_state === 'string') push(`Initial state: ${d.canonical_example.initial_state}`, '')
     if (d.canonical_example.inputs !== undefined) push(`Inputs: ${typeof d.canonical_example.inputs === 'string' ? d.canonical_example.inputs : JSON.stringify(d.canonical_example.inputs)}`, '')
+    const stepText = (t) => {
+      if (typeof t === 'string') return t
+      const text = t.label ? `**${t.label}** — ${t.action || ''}`
+        : t.action || t.description || t.state || t.what || ''
+      const stage = t.mechanism_stage ? ` _[stage: ${t.mechanism_stage}]_` : ''
+      return `${text}${t.result ? ` → ${t.result}` : ''}${stage}`
+    }
     for (const [i, t] of (d.canonical_example.execution_trace || []).entries()) {
-      push(`${i + 1}. ${typeof t === 'string' ? t : t.description || t.state || JSON.stringify(t)}`)
+      push(`${i + 1}. ${stepText(t)}`)
+    }
+    for (const [i, t] of (d.canonical_example.steps || []).entries()) {
+      push(`${(d.canonical_example.execution_trace || []).length + i + 1}. ${stepText(t)}`)
     }
     if (typeof d.canonical_example.result === 'string') push('', `Result: ${d.canonical_example.result}`)
     push('')
+  }
+  if ((d.worked_examples || []).length > 0) {
+    push('## Worked examples')
+    push('')
+    for (const we of d.worked_examples) {
+      push(`### ${we.title}`, '')
+      if (we.provenance) push(`Provenance: ${we.provenance.kind} — ${we.provenance.source}`, '')
+      for (const [i, t] of (we.steps || []).entries()) {
+        push(`${i + 1}. ${typeof t === 'string' ? t : `${t.label ? `**${t.label}** — ` : ''}${t.action || ''}${t.result ? ` → ${t.result}` : ''}`}`)
+      }
+      if (typeof we.result === 'string') push('', `Result: ${we.result}`)
+      push('')
+    }
   }
   if ((d.state_transitions || []).length > 0) {
     push('## State transitions')

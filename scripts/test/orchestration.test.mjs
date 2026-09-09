@@ -615,9 +615,38 @@ test('final gate: presentation reuse — same handoff hash reuses the recorded d
     const pres = status.nodes.find((n) => n.kind === 'presentation')
     assert.equal(pres.state, 'done')
     assert.equal(pres.observed_action, 'reused')
+    assert.equal(pres.checker, 'unavailable', 'deck without a checker stays compatible')
     const fin = runFinalize({ repoRoot: repo.root, runId: plan.run_id })
     assert.equal(fin.complete, true, JSON.stringify(fin.failures))
     assert.equal(fin.result_summary.presentation, 'reused')
+  } finally { restoreRuntimeStore() }
+})
+
+test('final gate (T5): deck project checker failure blocks presentation COMPLETE', () => {
+  const { repo, root, store } = setupThreeSubjects()
+  try {
+    const bundle = writeReadyBundle(root, { name: '2026-09-09-pres-other', repo, subjectName: 'Pres One', depth: 'presentation' })
+    const projectDir = writePresentationManifest(join(store, 'presentations'), { bundle, repoName: repo.name })
+    // a deck project whose own deterministic checker fails (broken QMD/geometry)
+    mkdirSync(join(projectDir, 'scripts'), { recursive: true })
+    writeFileSync(join(projectDir, 'scripts', 'check_project.py'),
+      'import sys\nprint("ERROR: .footnote[...] is not Quarto syntax", file=sys.stderr)\nsys.exit(1)\n')
+    const plan = planRun({ subjects: ['Pres One'], depth: 'presentation', outputs: ['artifacts', 'presentation'], repoRoot: repo.root })
+    const status = runStatus({ repoRoot: repo.root, runId: plan.run_id })
+    const pres = status.nodes.find((n) => n.kind === 'presentation')
+    assert.equal(pres.state, 'pending', 'a failing deck checker must not count as done')
+    assert.equal(pres.checker, 'fail')
+    assert.ok(pres.reasons.some((r) => r.includes('presentation checker failed')), JSON.stringify(pres.reasons))
+    const fin = runFinalize({ repoRoot: repo.root, runId: plan.run_id })
+    assert.equal(fin.complete, false, 'finalize must refuse COMPLETE while the checker fails')
+
+    // fixing the deck (checker passes) unblocks the node
+    writeFileSync(join(projectDir, 'scripts', 'check_project.py'),
+      'print("OK: project structure checks passed")\n')
+    const status2 = runStatus({ repoRoot: repo.root, runId: plan.run_id })
+    const pres2 = status2.nodes.find((n) => n.kind === 'presentation')
+    assert.equal(pres2.state, 'done')
+    assert.equal(pres2.checker, 'pass')
   } finally { restoreRuntimeStore() }
 })
 

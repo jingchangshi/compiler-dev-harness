@@ -55,7 +55,8 @@ Everything except the identity fields is optional at schema level; the readiness
 | `inputs`, `outputs` | entries `{name, form, description, evidence_refs}` | interfaces |
 | `mechanism` | `{summary?, stages[], control_flow?, data_flow?, mutable_state?, has_important_branching?}` | stages `{name, what, where?, key_functions?, evidence_refs}` — names derived from source |
 | `implementation_view`, `conceptual_view` | entries `{aspect, description, evidence_refs}` | how it is built vs why it behaves so |
-| `canonical_example` | `{provenance{kind, source}, initial_state?, inputs?, execution_trace?, important_states?, result?, boundary_examples?}` | generic concepts; pass-shaped before/after IR belongs in the pass extension |
+| `canonical_example` | `{provenance{kind, source}, initial_state?, inputs?, execution_trace?, steps?, important_states?, result?, boundary_examples?}` | generic concepts; pass-shaped before/after IR belongs in the pass extension. At presentation depth for example-required types the example must be **worked**: ≥3 ordered trace steps. Trace/step entries are strings or step mappings carrying at least one of `label`/`action`/`description`/`state` (plus optional `result`, `mechanism_stage`, `evidence_refs`) — `mechanism_stage` ties a step to a `mechanism.stages` name so the deck can walk the example along the mechanism |
+| `worked_examples` | `[{title, provenance{kind, source}, steps[], result?, evidence_refs?}]` | per-mechanism step-by-step instances beyond the canonical example (Phase T5) — one per complex mechanism the audience must trace, not a second canonical example |
 | `state_transitions` | `{phase, before, operation, after, reason?, evidence_refs}` | first-class state primitive; omit when stateless |
 | `decisions` | `{id?, question, condition, outcomes?, reason?, evidence_refs, example_refs?}` | branching that decides behavior; not compiler-legality-specific |
 | `strategies`, `comparisons` | arrays | only when ≥2 real paths exist; a single strategy is a validation error |
@@ -90,10 +91,11 @@ Readiness requires, per type: pass → placements + IR contract + legality/rewri
 
 ## handoff.json — PresentationHandoff
 
-`{subject_id, subject_type, depth?, audience?, learning_objectives?, storyline[], visuals[], must_have_visuals[], optional_visuals[], canonical_example?, key_takeaways?, comparisons?, important_decisions?, appendix_topics?, evidence_index[]}`.
+`{subject_id, subject_type, depth?, audience?, learning_objectives?, storyline[], visuals[], must_have_visuals[], optional_visuals[], canonical_example?, worked_examples?, key_takeaways?, comparisons?, important_decisions?, appendix_topics?, evidence_index[]}`.
 
 - `storyline` steps: `{position?, role, claim, dossier_section?, evidence_refs?}` — roles are free text, adaptive to the subject; the fixed pass narrative is forbidden.
 - `visuals`: semantic specs `{id, kind, title, purpose?, nodes[{id,label,role?}], edges[{from,to,label?,role?}], groups?, ordering?}` — `x/y/width/height/color/…` keys are validation errors; the harness never does layout.
+- `worked_examples`: `[{id, title, summary, evidence_refs?}]` — semantic references to the dossier's worked examples the deck must show; ids are stable keys the presentation manifest maps to slides (missing mapping fails the deck checker). Declare one per complex mechanism you expect the audience to trace step by step.
 - `evidence_index`: bounded subset `[{id, statement?, class?, refs?}]`, ids must resolve.
 
 ## readiness.json — written by the tool

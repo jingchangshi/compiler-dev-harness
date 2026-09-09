@@ -58,6 +58,10 @@ export const BOUNDARY_CATEGORIES = [
 ]
 
 export const EXAMPLE_PROVENANCE = ['test', 'production', 'probe', 'reconstructed']
+/** Acceptable primary text keys for structured example step entries (backward
+ * compatible: pre-T5 artifacts use {description} / {state}; T5 adds
+ * {label, action}). */
+export const STEP_TEXT_KEYS = ['label', 'action', 'description', 'state', 'what']
 
 export const ARTIFACT_KINDS = ['subject', 'evidence', 'mechanism', 'teaching_dossier', 'presentation_handoff', 'readiness_report']
 
@@ -375,7 +379,7 @@ export function validateDossier(dossier, evidenceIds, errors, source = 'dossier'
   if (!isObject(dossier)) { error(errors, source, 'must be a mapping'); return }
   unknownFields(errors, source, dossier, ['artifact', 'schema_version', 'subject_id', 'subject_type', 'depth', 'audience_contract',
     'mental_model', 'need', 'responsibility', 'observable_outcome', 'purpose', 'system_context', 'inputs', 'outputs',
-    'mechanism', 'implementation_view', 'conceptual_view', 'canonical_example', 'state_transitions', 'decisions',
+    'mechanism', 'implementation_view', 'conceptual_view', 'canonical_example', 'worked_examples', 'state_transitions', 'decisions',
     'strategies', 'comparisons', 'contracts', 'constraints', 'invariants', 'assumptions', 'boundaries', 'placement',
     'ownership', 'complexity', 'key_takeaways', 'design_tradeoffs', 'risks', 'extensions', 'evidence_refs'])
   if (dossier.artifact !== undefined && dossier.artifact !== 'teaching_dossier') error(errors, source, 'artifact must be "teaching_dossier"')
@@ -433,7 +437,9 @@ export function validateDossier(dossier, evidenceIds, errors, source = 'dossier'
 
   // Canonical example: generic concepts (initial_state/inputs/execution_trace/
   // important_states/result); pass-shaped before_ir/after_ir live in the pass
-  // extension's ir_contract, not here.
+  // extension's ir_contract, not here. Trace/state entries may be plain strings
+  // or structured steps (Phase T5): {label?, action, result?, mechanism_stage?,
+  // evidence_refs?} — at least one of label/action must be non-empty.
   if (dossier.canonical_example !== undefined) {
     const ex = dossier.canonical_example
     if (!isObject(ex)) error(errors, `${source}.canonical_example`, 'must be a mapping when present')
@@ -446,10 +452,56 @@ export function validateDossier(dossier, evidenceIds, errors, source = 'dossier'
       for (const field of ['initial_state', 'inputs', 'result']) {
         if (ex[field] !== undefined && !(typeof ex[field] === 'string' || isObject(ex[field]))) error(errors, `${source}.canonical_example.${field}`, 'must be a string or mapping when present')
       }
-      for (const field of ['execution_trace', 'important_states', 'boundary_examples']) {
-        if (ex[field] !== undefined && !Array.isArray(ex[field])) error(errors, `${source}.canonical_example.${field}`, 'must be an array when present')
+      for (const field of ['execution_trace', 'important_states', 'boundary_examples', 'steps']) {
+        if (ex[field] === undefined) continue
+        if (!Array.isArray(ex[field])) {
+          error(errors, `${source}.canonical_example.${field}`, 'must be an array when present')
+          continue
+        }
+        ex[field].forEach((entry, i) => {
+          if (typeof entry === 'string') return
+          if (!isObject(entry)) {
+            error(errors, `${source}.canonical_example.${field}[${i}]`, 'must be a string or a step mapping (label/action)')
+            return
+          }
+          if (!STEP_TEXT_KEYS.some((k) => isNonempty(entry[k]))) {
+            error(errors, `${source}.canonical_example.${field}[${i}]`, 'step mapping needs a non-empty label, action, description, or state')
+          }
+          if (entry.mechanism_stage !== undefined && !isNonempty(entry.mechanism_stage)) {
+            error(errors, `${source}.canonical_example.${field}[${i}].mechanism_stage`, 'must be a non-empty stage name when present')
+          }
+        })
       }
     }
+  }
+
+  // Worked examples (Phase T5): per-mechanism step-by-step instances beyond the
+  // canonical example. Same provenance discipline as canonical_example.
+  if (dossier.worked_examples !== undefined) {
+    if (!Array.isArray(dossier.worked_examples)) error(errors, `${source}.worked_examples`, 'must be an array when present')
+    else dossier.worked_examples.forEach((we, i) => {
+      const at = `${source}.worked_examples[${i}]`
+      if (!isObject(we)) { error(errors, at, 'must be a mapping'); return }
+      if (!isNonempty(we.title)) error(errors, `${at}.title`, 'must be a non-empty string')
+      if (we.provenance === undefined || !isObject(we.provenance)) error(errors, `${at}.provenance`, 'is required (kind + source)')
+      else {
+        if (!EXAMPLE_PROVENANCE.includes(we.provenance.kind)) error(errors, `${at}.provenance.kind`, `must be one of ${EXAMPLE_PROVENANCE}`)
+        if (!isNonempty(we.provenance.source)) error(errors, `${at}.provenance.source`, 'must be a non-empty string')
+      }
+      if (we.steps !== undefined) {
+        if (!Array.isArray(we.steps) || we.steps.length === 0) error(errors, `${at}.steps`, 'must be a non-empty array of steps when present')
+        else we.steps.forEach((entry, j) => {
+          if (typeof entry === 'string') return
+          if (!isObject(entry)) { error(errors, `${at}.steps[${j}]`, 'must be a string or a step mapping (label/action)'); return }
+          if (!STEP_TEXT_KEYS.some((k) => isNonempty(entry[k]))) {
+            error(errors, `${at}.steps[${j}]`, 'step mapping needs a non-empty label, action, description, or state')
+          }
+        })
+      }
+      if (we.result !== undefined && !(typeof we.result === 'string' || isObject(we.result))) {
+        error(errors, `${at}.result`, 'must be a string or mapping when present')
+      }
+    })
   }
 
   if (dossier.state_transitions !== undefined) validateEntryArray(dossier.state_transitions, TRANSITION_KEYS, errors, `${source}.state_transitions`)
@@ -596,7 +648,7 @@ export function validateHandoff(handoff, evidenceIds, errors, source = 'handoff'
   if (!isObject(handoff)) { error(errors, source, 'must be a mapping'); return }
   unknownFields(errors, source, handoff, ['artifact', 'schema_version', 'subject_id', 'subject_type', 'depth', 'audience',
     'learning_objectives', 'storyline', 'visuals', 'must_have_visuals', 'optional_visuals', 'canonical_example',
-    'key_takeaways', 'comparisons', 'important_decisions', 'appendix_topics', 'evidence_index'])
+    'worked_examples', 'key_takeaways', 'comparisons', 'important_decisions', 'appendix_topics', 'evidence_index'])
   if (handoff.artifact !== undefined && handoff.artifact !== 'presentation_handoff') error(errors, source, 'artifact must be "presentation_handoff"')
   if (!isNonempty(handoff.subject_id)) error(errors, `${source}.subject_id`, 'must be a non-empty string')
   if (!SUBJECT_TYPES.includes(handoff.subject_type)) error(errors, `${source}.subject_type`, `must be one of ${SUBJECT_TYPES}`)
@@ -631,6 +683,18 @@ export function validateHandoff(handoff, evidenceIds, errors, source = 'handoff'
     }
   }
   if (handoff.canonical_example !== undefined && !isObject(handoff.canonical_example)) error(errors, `${source}.canonical_example`, 'must be a mapping (summary/reference, not a full copy) when present')
+  // Worked examples (Phase T5): semantic references the deck must map to
+  // slides — coverage itself is enforced by the presentation manifest checker.
+  if (handoff.worked_examples !== undefined) {
+    if (!Array.isArray(handoff.worked_examples)) error(errors, `${source}.worked_examples`, 'must be an array when present')
+    else handoff.worked_examples.forEach((we, i) => {
+      const at = `${source}.worked_examples[${i}]`
+      if (!isObject(we)) { error(errors, at, 'must be a mapping'); return }
+      if (!isNonempty(we.id)) error(errors, `${at}.id`, 'must be a non-empty string (stable key for manifest mapping)')
+      if (!isNonempty(we.title)) error(errors, `${at}.title`, 'must be a non-empty string')
+      if (!isNonempty(we.summary)) error(errors, `${at}.summary`, 'must be a non-empty string (what the example shows)')
+    })
+  }
   if (handoff.key_takeaways !== undefined && !isStringArray(handoff.key_takeaways)) error(errors, `${source}.key_takeaways`, 'must be an array of non-empty strings when present')
   if (handoff.appendix_topics !== undefined && !isStringArray(handoff.appendix_topics)) error(errors, `${source}.appendix_topics`, 'must be an array of non-empty strings when present')
   if (handoff.evidence_index !== undefined) {
@@ -768,11 +832,19 @@ export function computeMechanicalReadiness({ subject, evidence, dossier, handoff
     checks.push(check('two_views', viewsOk ? 'pass' : (d === 'presentation' ? 'fail' : 'warn'), viewsOk ? 'implementation and conceptual views present' : 'implementation_view and conceptual_view are required at this depth'))
   }
 
-  // Canonical example when useful.
+  // Canonical example when useful. At presentation depth a pass/algorithm/
+  // pipeline/… example must be a WORKED example: an ordered step trace the
+  // audience can follow, not just a provenance pointer (Phase T5).
   if (requireExample) {
     const ex = dossier.canonical_example
-    const ok = ex && isObject(ex.provenance) && isNonempty(ex.provenance.source)
-    checks.push(check('canonical_example', ok ? 'pass' : 'fail', ok ? `example from ${ex.provenance.kind}` : `canonical_example required for ${dossier.subject_type} at depth ${d}`))
+    const hasProvenance = ex && isObject(ex.provenance) && isNonempty(ex.provenance.source)
+    const stepCount = ex ? ((ex.execution_trace || []).length + (ex.steps || []).length) : 0
+    const ok = hasProvenance && (d !== 'presentation' || stepCount >= 3)
+    checks.push(check('canonical_example', ok ? 'pass' : 'fail',
+      ok ? `example from ${ex.provenance.kind} (${stepCount} step${stepCount === 1 ? '' : 's'})`
+         : hasProvenance
+           ? `presentation depth requires a worked example with ≥3 trace steps, got ${stepCount}`
+           : `canonical_example required for ${dossier.subject_type} at depth ${d}`))
   } else {
     checks.push(check('canonical_example', 'not_applicable', `optional for ${dossier.subject_type}`))
   }

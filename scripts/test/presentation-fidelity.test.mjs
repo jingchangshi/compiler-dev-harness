@@ -241,3 +241,126 @@ test('geometry checker passes the committed template diagrams', () => {
   const r = checkGeometry(diagrams)
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })
+
+// ─── Workstream C: worked-example closure ───────────────────────────────────
+
+const { validateBundle, computeMechanicalReadiness } = await import('../../scripts/teaching-schema.mjs')
+const manifestValidator = join(TEMPLATE, 'scripts', 'validate_manifest.py')
+const { createHash } = await import('node:crypto')
+const sha256 = (d) => createHash('sha256').update(d).digest('hex')
+
+// Real curated presentation bundle (Case A) — the tests graft T5 fields onto it
+// so they exercise the full v1 schema, not a hand-rolled subset.
+const caseADir = join(repoRoot, 'analysis', 'explanations', '2026-09-08-mergevecscope-pass')
+function baseBundle() {
+  const load = (f) => JSON.parse(readFileSync(join(caseADir, f), 'utf-8'))
+  return { subject: load('subject.json'), evidence: load('evidence.json'),
+    dossier: load('dossier.json'), handoff: load('handoff.json') }
+}
+
+test('workstream C: handoff worked_examples validate and reach the preflight digest shape', () => {
+  const bundle = baseBundle()
+  bundle.handoff.worked_examples = [{ id: 'WE-1', title: '门控链实例', summary: 'walks the gate chain' }]
+  bundle.dossier.worked_examples = [{
+    title: '门控链实例',
+    provenance: { kind: 'test', source: 'test/a.mlir' },
+    steps: [
+      { label: 'S1', action: 'collect', mechanism_stage: 'Collect & order', evidence_refs: ['EV-001'] },
+      { label: 'S2', action: 'gate check fails', evidence_refs: ['EV-002'] },
+    ],
+  }]
+  const { errors: errs } = validateBundle(bundle)
+  assert.deepEqual(errs, [])
+
+  const bad = baseBundle()
+  bad.handoff.worked_examples = [{ title: 'no id, no summary' }]
+  const { errors: errs2 } = validateBundle(bad)
+  assert.ok(errs2.some((e) => e.includes('worked_examples[0].id')), errs2.join(';'))
+})
+
+test('workstream C: legacy step shapes ({description}/{state}) stay valid', () => {
+  const bundle = baseBundle()
+  bundle.dossier.canonical_example = {
+    provenance: { kind: 'test', source: 'test/a.mlir' },
+    execution_trace: [{ description: 'step one' }, { state: 'mid' }, 'step three'],
+  }
+  delete bundle.dossier.worked_examples
+  const { errors: errs } = validateBundle(bundle)
+  assert.deepEqual(errs, [])
+})
+
+test('workstream C: presentation depth requires a worked example (≥3 steps)', () => {
+  const mk = (trace, depth = 'presentation') => {
+    const bundle = baseBundle()
+    bundle.dossier.depth = depth
+    bundle.dossier.canonical_example = { provenance: { kind: 'test', source: 'test/a.mlir' }, execution_trace: trace }
+    return bundle
+  }
+  const fail = computeMechanicalReadiness(mk([
+    { description: 'only one step' },
+  ]), { depth: 'presentation' })
+  const failCheck = fail.checks.find((c) => c.name === 'canonical_example')
+  assert.equal(failCheck.status, 'fail')
+
+  const ok = computeMechanicalReadiness(mk([
+    { description: 's1' }, { description: 's2' }, { description: 's3' },
+  ]), { depth: 'presentation' })
+  const okCheck = ok.checks.find((c) => c.name === 'canonical_example')
+  assert.equal(okCheck.status, 'pass')
+
+  // standard depth keeps the old provenance-only floor
+  const std = computeMechanicalReadiness(mk([{ description: 'one step' }], 'standard'), { depth: 'standard' })
+  assert.equal(std.checks.find((c) => c.name === 'canonical_example').status, 'pass')
+})
+
+test('workstream C: manifest checker enforces worked-example mapping (missing mapping fails)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 't5-we-'))
+  try {
+    const handoff = baseBundle().handoff
+    handoff.worked_examples = [{ id: 'WE-1', title: '实例一', summary: 's' }]
+    const handoffPath = join(dir, 'handoff.json')
+    writeFileSync(handoffPath, JSON.stringify(handoff))
+    writeFileSync(join(dir, 'slides.qmd'), '# x\n\n## 实例一\n')
+    mkdirSync(join(dir, 'diagrams'), { recursive: true })
+    writeFileSync(join(dir, 'diagrams', 'dummy.svg'), '<svg/>')
+    // full story + visual coverage so ONLY the worked-example rules can fire
+    const coverage = {
+      storyline: (handoff.storyline || []).map((s0) => ({
+        position: s0.position, disposition: 'consumed', slides: ['## 实例一'] })),
+      must_have_visuals: (handoff.must_have_visuals || []).map((id) => ({
+        id, assets: ['diagrams/dummy.svg'], slides: ['## 实例一'] })),
+      evidence_ids: [],
+    }
+    const manifest = {
+      artifact: 'presentation_manifest', schema_version: 1,
+      input: { bundle_id: 'b', subject_id: handoff.subject_id, subject_type: handoff.subject_type,
+        handoff_schema_version: 1, handoff_sha256: sha256(readFileSync(handoffPath)),
+        source_head: 'h', readiness_verdict: 'ready', preflight: 'CONSUMABLE' },
+      consumed: coverage,
+    }
+    const mpath = join(dir, 'presentation-manifest.json')
+    const write = (obj) => writeFileSync(mpath, JSON.stringify(obj))
+
+    // 1: missing example mapping entirely → fail
+    write(manifest)
+    let r = py([manifestValidator, '--manifest', 'presentation-manifest.json', '--handoff', handoffPath], { cwd: dir })
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /worked example WE-1: declared in handoff but not mapped/)
+
+    // 2: mapped with a slide → pass
+    write({ ...manifest, consumed: { ...manifest.consumed, worked_examples: [{ id: 'WE-1', slides: ['## 实例一'] }] } })
+    r = py([manifestValidator, '--manifest', 'presentation-manifest.json', '--handoff', handoffPath], { cwd: dir })
+    assert.equal(r.status, 0, r.stderr)
+
+    // 3: deferred without reason → fail; with reason → pass
+    write({ ...manifest, consumed: { ...manifest.consumed, worked_examples: [{ id: 'WE-1', disposition: 'appendix', slides: [] }] } })
+    r = py([manifestValidator, '--manifest', 'presentation-manifest.json', '--handoff', handoffPath], { cwd: dir })
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /appendix requires a recorded reason/)
+    write({ ...manifest, consumed: { ...manifest.consumed, worked_examples: [{ id: 'WE-1', disposition: 'appendix', slides: [], reason: 'kept for the appendix session' }] } })
+    r = py([manifestValidator, '--manifest', 'presentation-manifest.json', '--handoff', handoffPath], { cwd: dir })
+    assert.equal(r.status, 0, r.stderr)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

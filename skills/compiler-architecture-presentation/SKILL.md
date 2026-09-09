@@ -128,6 +128,8 @@ python3 <PROJECT_DIR>/scripts/check_project.py [--handoff <bundle>/handoff.json]
     "must_have_visuals": [ { "id": "V1", "assets": ["diagrams/V1.excalidraw", "diagrams/V1.svg"],
                              "slides": ["…"] } ],
     "optional_visuals": [ { "id": "V4", "used": false } ],
+    "worked_examples": [ { "id": "WE-1", "slides": ["…"],
+                           "disposition": "consumed|appendix|omitted", "reason": "… (required for appendix/omitted)" } ],
     "key_takeaways": ["…"],
     "evidence_ids": ["EV-013", "…"],
     "canonical_example": { "summary": "…", "slide": "…" }
@@ -145,6 +147,7 @@ Evidence traceability stays intact end to end — `slide claim → handoff step 
 
 - **Storyline**: `handoff.storyline` is the semantic ordering source of truth. You may split one step into multiple slides, merge adjacent compatible steps, or move deep detail to the appendix — preserving claim meaning, order constraints, learning objectives, and key takeaways. Changing the story requires recording the reason in `adaptations`; silent overrides are contract violations.
 - **Canonical example**: `handoff.canonical_example` is the deck's example. Reducing it to a readable excerpt is a presentation adaptation (keep the mapping); substituting a different example is not allowed.
+- **Worked examples**: every `handoff.worked_examples` entry must appear in the manifest mapped to a slide (or deferred with a recorded reason) — silent drops fail the checker. Render each example as an ordered step list (quarto-content-semantics.md §2), not a prose paragraph; the steps come from the preflight digest (`worked_examples_full`), never re-derived from source.
 - **Must-have visuals**: semantic requirements, not optional decoration. You decide how to draw them, how many diagrams, node geometry, CJK label width — but omitting one requires a recorded reason and fails the checker if unmapped.
 - **Evidence epistemics**: never present reasoning as source fact, never present a reconstructed example as executed, never blur the fact/reasoning distinctions when condensing.
 - **User-requested source re-verification**: run the staleness check, refresh the explanation bundle via the code-explanation producer, re-gate READY, then present. The presentation skill never silently overwrites a handoff while reading source.

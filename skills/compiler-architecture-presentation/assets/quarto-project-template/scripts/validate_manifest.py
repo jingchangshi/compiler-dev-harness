@@ -33,6 +33,7 @@ from pathlib import Path
 SUPPORTED_MANIFEST_SCHEMA = 1
 DISPOSITIONS = {"consumed", "split", "merged", "appendix", "omitted"}
 DEFERRED = {"appendix", "omitted"}
+EXAMPLE_DISPOSITIONS = {"consumed", "appendix", "omitted"}
 
 
 def sha256(path: Path) -> str:
@@ -170,6 +171,40 @@ def main() -> int:
         for eid in consumed.get("evidence_ids") or []:
             if eid not in index_ids:
                 fail(errors, f"evidence id {eid} not in handoff evidence_index")
+
+    # Worked-example coverage (Phase T5): every worked example the handoff
+    # declares must map to a slide or be explicitly deferred with a reason —
+    # silent drops of worked examples fail the same way as dropped story steps.
+    if handoff is not None:
+        declared = handoff.get("worked_examples") or []
+        mapped = {}
+        for entry in consumed.get("worked_examples") or []:
+            wid = entry.get("id")
+            if not wid:
+                fail(errors, "consumed.worked_examples entry without id")
+                continue
+            if wid in mapped:
+                fail(errors, f"worked example {wid}: duplicate mapping")
+            mapped[wid] = entry
+            disposition = entry.get("disposition", "consumed")
+            if disposition not in EXAMPLE_DISPOSITIONS:
+                fail(errors, f"worked example {wid}: invalid disposition {disposition!r} "
+                             f"(allowed: {sorted(EXAMPLE_DISPOSITIONS)})")
+                continue
+            slides = entry.get("slides") or []
+            if disposition in DEFERRED:
+                if not entry.get("reason"):
+                    fail(errors, f"worked example {wid}: {disposition} requires a recorded reason")
+            elif not slides:
+                fail(errors, f"worked example {wid}: consumed but no slide mapping")
+            for title in slides:
+                if qmd and title not in qmd:
+                    fail(errors, f"worked example {wid}: slide reference not found in slides.qmd: {title!r}")
+        for we in declared:
+            wid = we.get("id")
+            if wid and wid not in mapped:
+                fail(errors, f"worked example {wid}: declared in handoff but not mapped in the "
+                             "manifest (missing example mapping)")
 
     # Adaptations must be recorded as source→decision→reason triples.
     for ad in manifest.get("adaptations") or []:

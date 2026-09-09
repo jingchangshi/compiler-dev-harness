@@ -49,6 +49,13 @@ function buildDigest(bundle) {
     must_have_visuals: h.must_have_visuals || [],
     optional_visuals: h.optional_visuals || [],
     canonical_example: h.canonical_example || (d.canonical_example ? { summary: 'see dossier.canonical_example', provenance: d.canonical_example.provenance } : undefined),
+    // Phase T5 worked examples: semantic references the deck must map to
+    // slides (manifest coverage is checker-enforced); full step detail comes
+    // from the dossier pointers.
+    worked_examples: (h.worked_examples || []).map((w) => ({
+      id: w.id, title: w.title, summary: w.summary, evidence_refs: w.evidence_refs || [],
+    })),
+    worked_examples_full: (d.worked_examples || []).length > 0 ? d.worked_examples : undefined,
     learning_objectives: h.learning_objectives || [],
     key_takeaways: h.key_takeaways || [],
     comparisons: (h.comparisons || []).map((c) => c.id || c.compared?.join(' vs ')).filter(Boolean),
