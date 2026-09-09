@@ -249,20 +249,36 @@ def route_edge(a: dict, b: dict) -> list:
 
     Straight adjacency is handled by the caller. All vertical segments run in
     inter-column corridors or the left margin (node-free by construction); all
-    long horizontal segments run in band gutters (node-free by construction)."""
+    long horizontal segments run in band gutters (node-free by construction).
+
+    Redundancy rules (Phase T6): a route may never run PAST its target and
+    double back. Same-column targets connect directly along the shared
+    node-free corridor (no gutter dip); same-band cross-column edges cross at
+    the NEARER of the band's two gutters."""
     a_band, b_band = a["col"].band, b["col"].band
     a_cy = a["y"] + a["h"] / 2
     b_cy = b["y"] + b["h"] / 2
-    if b_band.index == a_band.index:
-        g_y = a_band.gutter_below()
-    elif b_band.index > a_band.index:
+    if a_band is b_band:
+        exit_vx = a_band.corridor_right_of(a["col"].i)
+        enter_right = b["col"].i <= a["col"].i
+        entry_vx = (b_band.corridor_right_of(b["col"].i) if enter_right
+                    else b_band.corridor_left_of(b["col"].i))
+        if a["col"] is b["col"] or exit_vx == entry_vx:
+            # same column, or adjacent columns sharing one gap corridor: the
+            # corridor alone connects the two nodes; dipping to a band gutter
+            # would overshoot the target and double back
+            return _dedup([(exit_vx, a_cy), (exit_vx, b_cy)])
+        # distinct corridors: cross at the nearer node-free horizontal channel
+        below, above = a_band.gutter_below(), a_band.gutter_above()
+        g_y = below if (abs(below - a_cy) + abs(below - b_cy)) <= (abs(above - a_cy) + abs(above - b_cy)) else above
+        pts = [(exit_vx, a_cy), (exit_vx, g_y), (entry_vx, g_y), (entry_vx, b_cy)]
+        return _dedup(pts)
+    if b_band.index > a_band.index:
         g_y = a_band.gutter_below()
     else:
         g_y = a_band.gutter_above()
     exit_vx = a_band.corridor_right_of(a["col"].i)
     enter_right = (b_band.index, b["col"].i) < (a_band.index, a["col"].i)
-    if b_band.index == a_band.index:
-        enter_right = b["col"].i <= a["col"].i
     entry_vx = (b_band.corridor_right_of(b["col"].i) if enter_right
                 else b_band.corridor_left_of(b["col"].i))
     pts = [(exit_vx, a_cy), (exit_vx, g_y), (entry_vx, g_y), (entry_vx, b_cy)]
@@ -273,11 +289,26 @@ def route_edge(a: dict, b: dict) -> list:
         g2 = b_band.gutter_below() if b_band.index < a_band.index else b_band.gutter_above()
         pts = [(exit_vx, a_cy), (exit_vx, g_y), (lm, g_y), (lm, g2),
                (entry_vx, g2), (entry_vx, b_cy)]
+    return _dedup(pts)
+
+
+def _dedup(pts) -> list:
     dedup = []
     for p in pts:
         if not dedup or list(p) != list(dedup[-1]):
             dedup.append(list(p))
     return dedup
+
+
+def self_loop_waypoints(a: dict) -> list:
+    """A self-relation (e.g. a loop backedge from a stage to itself) leaves the
+    node's right side, makes a small detour inside the node-free corridor, and
+    returns — never a degenerate down-and-back line."""
+    cx = a["x"] + a["w"]
+    cy = a["y"] + a["h"] / 2
+    dx = GAP_X / 2
+    y1, y2 = cy - a["h"] / 4, cy + a["h"] / 4
+    return [[cx + dx, y1], [cx + dx, y2]]
 
 
 def make_edge(e, a, b, wps):
@@ -338,7 +369,10 @@ def straight_is_clean(e, a: dict, b: dict, boxes: dict) -> bool:
 
 
 def connect(e, a: dict, b: dict, boxes: dict, straight_when: bool):
-    """Straight when allowed AND clean; corridor elbow otherwise."""
+    """Straight when allowed AND clean; self-loops get a dedicated mini-detour;
+    corridor elbow otherwise."""
+    if e["from"] == e["to"]:
+        return make_edge(e, a, b, self_loop_waypoints(a))
     wps = [] if (straight_when and straight_is_clean(e, a, b, boxes)) else route_edge(a, b)
     return make_edge(e, a, b, wps)
 
@@ -489,10 +523,13 @@ def vertical_layout(spec):
         if not a or not b:
             continue
         forward = pos_index[e["to"]] == pos_index[e["from"]] + 1
-        wps = []
-        if not forward:
+        if e["from"] == e["to"]:
+            wps = self_loop_waypoints(a)
+        elif not forward:
             a_cy, b_cy = a["y"] + a["h"] / 2, b["y"] + b["h"] / 2
             wps = [(channel, a_cy), (channel, b_cy)]
+        else:
+            wps = []
         routed.append(make_edge(e, a, b, wps))
     return positions, routed, max(width + GAP_X, MIN_NODE_W), max(height, MIN_NODE_H)
 
@@ -549,14 +586,17 @@ def column_layout(spec):
         a, b = positions.get(e["from"]), positions.get(e["to"])
         if not a or not b:
             continue
-        a_top = a["y"] + a["h"] <= base_y + 1
-        b_top = b["y"] + b["h"] <= base_y + 1
-        straight = (a_top and b_top and a["x"] != b["x"]) or (not a_top and not b_top)
-        wps = []
-        if not straight:
-            channel = max(a["x"] + a["w"], b["x"] + b["w"]) + GAP_X / 2
-            a_cy, b_cy = a["y"] + a["h"] / 2, b["y"] + b["h"] / 2
-            wps = [(channel, a_cy), (channel, b_cy)]
+        if e["from"] == e["to"]:
+            wps = self_loop_waypoints(a)
+        else:
+            a_top = a["y"] + a["h"] <= base_y + 1
+            b_top = b["y"] + b["h"] <= base_y + 1
+            straight = (a_top and b_top and a["x"] != b["x"]) or (not a_top and not b_top)
+            wps = []
+            if not straight:
+                channel = max(a["x"] + a["w"], b["x"] + b["w"]) + GAP_X / 2
+                a_cy, b_cy = a["y"] + a["h"] / 2, b["y"] + b["h"] / 2
+                wps = [(channel, a_cy), (channel, b_cy)]
         routed.append(make_edge(e, a, b, wps))
     return positions, routed, width, height
 

@@ -1250,6 +1250,7 @@ Agent 仍然独占全部语义工作(机制重构、mental model、bridges、sto
 ### 22.4 Consumer 支持与几何引擎修正
 
 - `spec_to_diagram.py`:语义→视觉编码(consumer 决策):state-only 节点 amber、stage 节点 blue、state-domain 边 dashed;**直线段守卫**:相邻列/带直线仅当 anchor-to-anchor 线段不穿过任何第三方盒子(Liang-Barsky 判交),否则回落走廊 elbow——修复堆叠列下"直连必然穿节点"的引擎缺陷(V2B dogfood 暴露),router_layout/chain_layout/grid_layout 三个布局统一接线。
+- **边路由冗余消除与画幅 margin(T6 后续修正)**:route_edge 对同列/共享走廊的目标直连走廊(不再下潜到 gutter 再折返),同带跨列在带的上/下 gutter 中选**较近者**穿越,自环(self-relation)用右侧走廊内的小回环替代退化折返线;`make_excalidraw_diagram.py` 的 SVG 画幅改为**由元素真实极值(盒子+折线+标签盘)对称推导**,四周统一 32px margin——此前 viewBox 从 (0,0) 起、只向右/下加 24px,左侧 margin 跳线(走廊 x=-45)与 gutter 上沿的连线会被整体裁掉。
 - preflight digest 透传 `covers/stages_mapped/state_edges/control_kinds` 与 `dossier_pointers.mechanism_states`,consumer 无需重读原始 artifact 即可看到契约。
 
 ### 22.5 测试与回归

@@ -126,7 +126,15 @@ def main():
     args=ap.parse_args()
     spec=json.loads(args.spec.read_text(encoding="utf-8"))
     els=[]; body=[]
-    content_max_w=spec.get("width", 1200); content_max_h=spec.get("height", 500)
+    # True content extents: every drawn element (boxes, arrow polylines, edge
+    # label plates) contributes both its max AND min side. Routes may leave the
+    # node grid (band gutters above/below, left-margin hops), so the frame is
+    # derived from the elements themselves — never assumed to start at (0,0).
+    extents=[[None,None],[None,None]]  # [[min_x,max_x],[min_y,max_y]]
+    def span(x0,y0,x1,y1):
+        e=extents
+        e[0][0]=x0 if e[0][0] is None else min(e[0][0],x0); e[0][1]=x1 if e[0][1] is None else max(e[0][1],x1)
+        e[1][0]=y0 if e[1][0] is None else min(e[1][0],y0); e[1][1]=y1 if e[1][1] is None else max(e[1][1],y1)
     for node in spec.get("nodes",[]):
         text=node["text"]; fs=node.get("fontSize",18); pad=node.get("padding",36)
         lines = node.get("lines") or wrap_lines(text, max(node.get("width", 0) - 20, 120), fs)
@@ -141,9 +149,7 @@ def main():
         body.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="5" fill="{bg}" stroke="{stroke}" stroke-width="2"/>')
         body.append(svg_text(x+10,y+8,w-20,h-16,single,fs,"#222","center"))
         node["_w"]=w; node["_h"]=h
-        # real content extents: rendered boxes are measured from label text and
-        # can exceed the layout's assumed grid
-        content_max_w=max(content_max_w, x+w); content_max_h=max(content_max_h, y+h)
+        span(x,y,x+w,y+h)
     lookup={n["id"]:n for n in spec.get("nodes",[])}
     for i,edge in enumerate(spec.get("edges",[])):
         a=lookup[edge["from"]]; b=lookup[edge["to"]]
@@ -156,7 +162,7 @@ def main():
         els.append(make_arrow(f"edge_{i}",pts,color,dashed))
         body.append(svg_polyline(pts,color,dashed))
         for p in pts:
-            content_max_w=max(content_max_w, p[0]); content_max_h=max(content_max_h, p[1])
+            span(p[0],p[1],p[0],p[1])
         if edge.get("label"):
             # label sits at the midpoint of the longest segment
             seg, best = None, -1.0
@@ -169,9 +175,14 @@ def main():
             label=edge["label"]; fs2=edge.get("fontSize",16); lw=max(80, estimate_width(label,fs2)+18)
             body.append(f'<rect x="{mx-lw/2:.1f}" y="{my-fs2:.1f}" width="{lw:.1f}" height="{fs2*1.45:.1f}" fill="#fff"/>')
             body.append(svg_text(mx-lw/2,my-fs2,lw,fs2*1.45,label,fs2,"#555","center"))
-    margin=24
-    W=content_max_w+margin; H=content_max_h+margin
-    svg=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W:.0f} {H:.0f}" width="100%" height="100%">',
+            span(mx-lw/2, my-fs2, mx+lw/2, my-fs2+fs2*1.45)
+    # symmetric margin on ALL four sides so strokes, arrowheads, and routed
+    # connectors are never clipped by the SVG frame
+    margin=32
+    min_x, max_x = extents[0] if extents[0][0] is not None else (0, 0)
+    min_y, max_y = extents[1] if extents[1][0] is not None else (0, 0)
+    W=(max_x-min_x)+2*margin; H=(max_y-min_y)+2*margin
+    svg=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x-margin:.0f} {min_y-margin:.0f} {W:.0f} {H:.0f}" width="100%" height="100%">',
          '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>']
     svg.extend(body)
     svg.append('</svg>')

@@ -104,6 +104,15 @@ dogfood 链路:`TeachingDossier(+states/relations/WE)→ PresentationHandoff(sem
 - 直线段守卫覆盖 router/chain/grid 布局;column/vertical 布局维持 T5 行为(其通道/间隙按构造无节点)。
 - 渲染 QA 的浏览器截图不可用(环境限制),以确定性几何 QA + HTML 文本核验代替。
 
+### 10.1 画幅裁剪与边路由冗余修正(dogfood 验收反馈,同日)
+
+dogfood 验收发现两个引擎级缺陷并已修复(重新生成 T6 deck 全部 6 张图验证):
+
+1. **画幅无 margin、元素被裁**:`make_excalidraw_diagram.py` 原 viewBox 从 (0,0) 起且只向右/下加 24px;而路由会在**左侧 margin(走廊 x=-45)与带上 gutter 之上**走线(V2B 的左 margin 跳线、V5 的顶部 gutter),这些连接线整体落在 viewBox 外被裁掉;最左/最上节点的描边也只有半个像素贴边。修复:画幅改为由元素真实极值(盒子 + 箭头折线 + 标签盘)对称推导,四周统一 32px margin;已程序化验证 6 张图的 viewBox 完整包含全部元素坐标。
+2. **连接线冗余延长**:`route_edge` 对同带目标一律下潜到带底 gutter 再折返——V2B 中 5 条边先垂直到 y=829(超过目标 y≈392–752 达 77–437px)再爬回,自环则退化为"下去又原路返回"的重叠线。修复:同列/共享走廊目标直连走廊(无 gutter 下潜);同带跨列在上/下 gutter 中选较近者;自环改为右侧走廊内的小回环。全部 6 张图 zero 退化路由,几何 QA 全 PASS。
+
+两处修复均为 generic 引擎行为,不改变任何语义契约;历史 deck(T5 及更早)的入库产物保持原样,重新运行 `spec_to_diagram.py` 即可按新引擎重建。
+
 ## 11. Next recommended phase(T7 候选)
 
 - **data-flow fidelity 契约**:把 `edge_domain=data` 从"允许"推进为"可校验"(表示边界、IR 形态转移的声明与消费)。

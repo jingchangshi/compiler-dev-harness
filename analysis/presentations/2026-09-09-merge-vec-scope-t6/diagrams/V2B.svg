@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1509 962" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-77 -32 1667 1002" width="100%" height="100%">
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/></marker></defs>
 <rect x="0" y="0" width="234.0" height="64" rx="5" fill="#eef5ff" stroke="#2a76dd" stroke-width="2"/>
 <text x="117.0" y="38.8" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="18" fill="#222">打分阶段（只发生一次）</text>
@@ -49,21 +49,21 @@
 <polyline points="1119.6,32.0 1209.6,272.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
 <rect x="1092.8" y="126.0" width="143.6" height="23.2" fill="#fff"/>
 <text x="1164.6" y="143.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">merged 追加尾部</text>
-<polyline points="1119.6,32.0 1164.6,32.0 1164.6,829.0 1164.6,392.0 1209.6,392.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
-<rect x="1084.8" y="404.5" width="159.6" height="23.2" fill="#fff"/>
-<text x="1164.6" y="422.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">merged 继承链宽和</text>
-<polyline points="1119.6,32.0 1164.6,32.0 1164.6,829.0 1164.6,512.0 1209.6,512.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
-<rect x="1113.2" y="404.5" width="102.8" height="23.2" fill="#fff"/>
-<text x="1164.6" y="422.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">+= 旧 A、B</text>
-<polyline points="1119.6,32.0 1164.6,32.0 1164.6,829.0 1164.6,632.0 1209.6,632.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
-<rect x="1075.2" y="404.5" width="178.8" height="23.2" fill="#fff"/>
-<text x="1164.6" y="422.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">mergeNodes 并组重连</text>
-<polyline points="1119.6,32.0 1164.6,32.0 1164.6,829.0 1164.6,752.0 1209.6,752.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
-<rect x="1076.8" y="404.5" width="175.6" height="23.2" fill="#fff"/>
-<text x="1164.6" y="422.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">插回 vfs / 追加队列</text>
-<polyline points="1379.6,32.0 1485.0,32.0 1485.0,829.0 1485.0,512.0 1436.4,512.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
-<rect x="1411.6" y="404.5" width="146.8" height="23.2" fill="#fff"/>
-<text x="1485.0" y="422.1" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">统一 func.erase</text>
+<polyline points="1119.6,32.0 1164.6,32.0 1164.6,392.0 1209.6,392.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="1084.8" y="186.0" width="159.6" height="23.2" fill="#fff"/>
+<text x="1164.6" y="203.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">merged 继承链宽和</text>
+<polyline points="1119.6,32.0 1164.6,32.0 1164.6,512.0 1209.6,512.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="1113.2" y="246.0" width="102.8" height="23.2" fill="#fff"/>
+<text x="1164.6" y="263.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">+= 旧 A、B</text>
+<polyline points="1119.6,32.0 1164.6,32.0 1164.6,632.0 1209.6,632.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="1075.2" y="306.0" width="178.8" height="23.2" fill="#fff"/>
+<text x="1164.6" y="323.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">mergeNodes 并组重连</text>
+<polyline points="1119.6,32.0 1164.6,32.0 1164.6,752.0 1209.6,752.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="1076.8" y="366.0" width="175.6" height="23.2" fill="#fff"/>
+<text x="1164.6" y="383.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">插回 vfs / 追加队列</text>
+<polyline points="1379.6,32.0 1485.0,32.0 1485.0,512.0 1436.4,512.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="1411.6" y="246.0" width="146.8" height="23.2" fill="#fff"/>
+<text x="1485.0" y="263.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">统一 func.erase</text>
 <polyline points="1379.6,32.0 1485.0,32.0 1485.0,829.0 -45.0,829.0 -45.0,906.0 0.0,906.0" fill="none" stroke="#343a40" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
 <rect x="655.0" y="803.0" width="130.0" height="23.2" fill="#fff"/>
 <text x="720.0" y="820.6" text-anchor="middle" font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="16" fill="#555">延迟到此刻删除</text>
