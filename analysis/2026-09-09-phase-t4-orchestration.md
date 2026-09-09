@@ -135,9 +135,9 @@ run-finalize: complete = false | state = blocked_at_child   ← AMBIGUOUS 未静
 
 ## 11. Git
 
-- 最终 commit:`<filled after push>`
-- push result:`<filled after push>`
-- working tree after push:`<filled after push>`
+- 最终 commit:`ca309be` — "Phase T4: explanation workflow orchestration control plane (catalog/resolver/planner/DAG/final gate)"(12 files, +2486/−10)
+- push result:`7161b75..ca309be  main -> main`(origin/main 已确认包含 `ca309be`)
+- working tree after push:clean(仅 gitignored `analysis/runtime/` 运行时工件)
 
 ## 12. Architecture Review(§71)
 
