@@ -28,6 +28,14 @@
  * semantic source, cross-component claims cite fresh composition evidence or
  * namespaced child-evidence imports (alias::EV-ID) — never copied child
  * ledgers. Freshness is recursive (system + children + import hashes).
+ * v2.2 (2026-09-09, Phase T4): explanation orchestration control plane —
+ * catalog (derived artifact catalog over the runtime + curated stores),
+ * run-plan (subject resolution with explicit AMBIGUOUS, REUSE/REFRESH/CREATE
+ * planning with depth compatibility, execution DAG), run-status (derived node
+ * states, NEXT_ACTIONS, compact child work packets, auto-rendered documents),
+ * run-finalize (final gate over every requested deliverable), render (derived
+ * human-readable single-subject explanation.md). Orchestration never generates
+ * semantic content; the agent still owns all reasoning.
  */
 
 exports.name = 'compiler-explain'
@@ -44,25 +52,33 @@ const EXPLAIN_POLICY = `Code explanation capability (always on). When the user a
 /** Compact tool output renderer: JSON only, one bounded block. */
 const renderJson = (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 1) }]
 
+const ORCHESTRATION_POLICY = `Explanation orchestration (always on, Phase T4). Route by what the user asked, in their words: one subject ("解释 X") → single-subject orchestration; several subjects and their relations ("解释/梳理 A、B、C 以及它们之间的关系/协作") → multi-subject orchestration; "形成文档/整理成文档" adds the documents output; "做 slides/形成 slides" adds the presentation output. The user never supplies bundle paths, compose commands, or artifact internals — only subject names and desired outputs. Workflow: (1) compiler_explain run-plan with the subject names verbatim, the target repository (repo_root, default cwd), desired depth, and outputs — the planner builds the artifact catalog (runtime + curated stores), resolves each subject deterministically, classifies REUSE / REFRESH / CREATE (AMBIGUOUS matches are returned for YOUR decision using repository evidence — never auto-picked), and emits the execution DAG; (2) execute only the returned child work packets — delegate independent CREATE/REFRESH subjects to subagents in parallel when available, sequentially otherwise; REUSE subjects are consumed as-is (semantic re-analysis = 0) and REFRESH means incremental update of the existing bundle, never a from-scratch re-derivation; (3) after each child reports done, re-check with compiler_explain run-status — it deterministically re-validates readiness + freshness, renders the derived documents (explanation.md / system-story.md), and emits the next actions; trust the gate, not the child's word; (4) resolve AMBIGUOUS subjects by explicit decision, then re-run run-plan (it resumes the same run); (5) gate the request with compiler_explain run-finalize before claiming completion — COMPLETE requires every requested subject READY+FRESH, every requested document current, the composition recursively fresh with no open conflicts, and the presentation manifest matching the current handoff hash; partial progress is never COMPLETE, it is blocked_at_child / blocked_at_composition / presentation_invalid with reasons. Run state (run.json) lives in the gitignored runtime store (analysis/runtime/, partitioned by repository) — normal use never writes into the curated analysis/explanations/ fixtures and never commits runtime artifacts; curated promotion is an explicit developer action. The low-level primitives (plan/validate/readiness/stale/compose-*) remain first-class for debugging, testing, and expert workflows.`
+
 exports.apply = function apply(ctx) {
   ctx.systemPrompt.section({ name: 'code-explanation-policy', order: 116, text: EXPLAIN_POLICY })
+  ctx.systemPrompt.section({ name: 'code-explanation-orchestration-policy', order: 117, text: ORCHESTRATION_POLICY })
 
   const driverPromise = import(new URL('./compiler-explain-driver.mjs', `file://${__filename}`).href)
   const composeDriverPromise = import(new URL('./compiler-compose-driver.mjs', `file://${__filename}`).href)
+  const orchestrateDriverPromise = import(new URL('./compiler-orchestrate-driver.mjs', `file://${__filename}`).href)
 
   ctx.tools.register({
     name: 'compiler_explain',
-    description: 'Deterministic scaffolding, validation, readiness, staleness, and system-story composition for code-explanation teaching artifacts (Teaching Artifact Protocol v1 + composition layer). Commands: plan — scaffold a teaching bundle for a subject (subject skeleton, evidence plan over the existing deterministic tools, extension fields, readiness checklist, audience questions); validate — validate subject/evidence/dossier/handoff shapes and evidence discipline in a bundle dir; readiness — run the mechanical readiness gate and, when semantic_review is provided, record it and persist readiness.json (READY requires mechanical pass AND a recorded audience-comprehension review); stale — compare the bundle\'s recorded provenance (HEAD, source file hashes) against the repository now (recursively for composition bundles: system + children + import hashes); compose-preflight — deterministic gate over candidate child bundles before any system-level reasoning (READY+FRESH, unique subject ids, same repository, same current HEAD); compose-plan — scaffold a system-story composition (composition skeleton, disposition/bridge/imports models, reuse rules); compose-validate — validate a composition bundle (schema, import resolvability + hash match, coverage/bridges/conflicts, recursive staleness, mechanical readiness); compose-render — render the derived system-story.md view (JSON artifacts stay the source of truth). The tool never generates teaching content: mechanisms, mental models, storylines, bridges, and the semantic verdict are agent reasoning recorded in the artifacts.',
+    description: 'Deterministic scaffolding, validation, readiness, staleness, system-story composition, and orchestration for code-explanation teaching artifacts (Teaching Artifact Protocol v1 + composition layer + orchestration control plane). Commands: plan — scaffold a teaching bundle for a subject (subject skeleton, evidence plan over the existing deterministic tools, extension fields, readiness checklist, audience questions); validate — validate subject/evidence/dossier/handoff shapes and evidence discipline in a bundle dir; readiness — run the mechanical readiness gate and, when semantic_review is provided, record it and persist readiness.json (READY requires mechanical pass AND a recorded audience-comprehension review); stale — compare the bundle\'s recorded provenance (HEAD, source file hashes) against the repository now (recursively for composition bundles: system + children + import hashes); compose-preflight — deterministic gate over candidate child bundles before any system-level reasoning (READY+FRESH, unique subject ids, same repository, same current HEAD); compose-plan — scaffold a system-story composition (composition skeleton, disposition/bridge/imports models, reuse rules); compose-validate — validate a composition bundle (schema, import resolvability + hash match, coverage/bridges/conflicts, recursive staleness, mechanical readiness); compose-render — render the derived system-story.md view (JSON artifacts stay the source of truth); catalog — derive the artifact catalog (runtime + curated origins, recomputed readiness/freshness, presentation state) without any persistent index; run-plan — plan or resume an explanation run: resolve user subject names deterministically (AMBIGUOUS returned explicitly), classify REUSE/REFRESH/CREATE with depth compatibility, decide composition and presentation reuse, emit the execution DAG and compact child work packets; run-status — derive node states from the artifacts (never trusting run.json), auto-render current documents, and return NEXT_ACTIONS; run-finalize — final gate: every requested deliverable (bundles, documents, system story, presentation) verified fresh/ready/traceable before the run is COMPLETE; render — render the derived human-readable single-subject explanation.md from the JSON artifacts. The tool never generates teaching content: mechanisms, mental models, storylines, bridges, and the semantic verdict are agent reasoning recorded in the artifacts.',
     parameters: { type: 'object', additionalProperties: false, required: ['command'], properties: {
-      command: { type: 'string', enum: ['plan', 'validate', 'readiness', 'stale', 'compose-preflight', 'compose-plan', 'compose-validate', 'compose-render'], description: 'plan (scaffold), validate (schema + evidence discipline), readiness (mechanical gate + semantic review recording), stale (provenance freshness), compose-preflight (child-bundle gate), compose-plan (system-story scaffold), compose-validate (composition bundle validation), compose-render (derived system-story.md).' },
+      command: { type: 'string', enum: ['plan', 'validate', 'readiness', 'stale', 'compose-preflight', 'compose-plan', 'compose-validate', 'compose-render', 'catalog', 'run-plan', 'run-status', 'run-finalize', 'render'], description: 'plan (scaffold), validate (schema + evidence discipline), readiness (mechanical gate + semantic review recording), stale (provenance freshness), compose-preflight (child-bundle gate), compose-plan (system-story scaffold), compose-validate (composition bundle validation), compose-render (derived system-story.md), catalog (derived artifact catalog), run-plan (plan/resume an explanation run), run-status (derived run status + next actions), run-finalize (final deliverable gate), render (derived explanation.md).' },
       subject_type: { type: 'string', enum: SUBJECT_TYPES, description: 'plan: what kind of object the subject is. Drives the evidence plan, extension fields, and readiness checks.' },
       name: { type: 'string', description: 'plan: subject name as users refer to it (symbol, file, pipeline, subsystem).' },
       depth: { type: 'string', enum: DEPTHS, description: 'plan/readiness: explanation depth. presentation = deep enough to teach + structured for handoff (requires handoff with storyline).' },
       why_this_subject: { type: 'string', description: 'plan: why this subject was chosen (dogfood provenance).' },
-      repo_root: { type: 'string', description: 'plan/stale: target compiler repository (default cwd).' },
-      bundle_dir: { type: 'string', description: 'validate/readiness/stale/compose-validate/compose-render: teaching bundle directory (under analysis/explanations/ by default).' },
+      repo_root: { type: 'string', description: 'plan/stale/compose-*/catalog/run-*: target compiler repository (default cwd).' },
+      root_dir: { type: 'string', description: 'plan/compose-plan: bundle root to write into. Orchestration work packets pass the runtime store root (analysis/runtime/explanations/<repository>); omit for the curated default.' },
+      bundle_dir: { type: 'string', description: 'validate/readiness/stale/compose-validate/compose-render/render: teaching bundle directory (under analysis/explanations/ or the runtime store).' },
       bundle_dirs: { type: 'array', items: { type: 'string' }, description: 'compose-preflight: child bundle directories to gate for composition.' },
       requested_components: { type: 'array', items: { type: 'string' }, description: 'compose-plan: the components the user asked to have connected — each is held to an explicit disposition in composition.json.' },
+      subjects: { type: 'array', items: { type: 'string' }, description: 'run-plan: the subject names exactly as the user referred to them (symbols, files, pipelines, subsystems).' },
+      outputs: { type: 'array', items: { type: 'string', enum: ['artifacts', 'documents', 'system_story', 'presentation'] }, description: 'run-plan: requested deliverables. Default: artifacts + documents. system_story/presentation on a multi-subject request add the composition node.' },
+      run_id: { type: 'string', description: 'run-plan/run-status/run-finalize: explanation run id. Omitted: run-plan resumes an open run with the same request signature; run-status/run-finalize use the most recent open run for the repository.' },
       current_head: { type: 'string', description: 'compose-preflight: current repository HEAD to compare children against (derived from repo_root when omitted).' },
       semantic_review: { type: 'object', additionalProperties: false, required: ['verdict'], properties: {
         verdict: { type: 'string', enum: ['ready', 'not_ready'], description: 'Reviewer conclusion after answering the audience questions against the dossier.' },
@@ -85,6 +101,27 @@ exports.apply = function apply(ctx) {
       if (command === 'plan') {
         const plan = driver.planTeaching(args)
         return { command, ...plan }
+      }
+      if (command === 'catalog') {
+        const orch = await orchestrateDriverPromise
+        return { command, ...orch.buildCatalog({ repoRoot: args.repo_root }) }
+      }
+      if (command === 'run-plan') {
+        const orch = await orchestrateDriverPromise
+        return { command, ...orch.planRun({ subjects: args.subjects, depth: args.depth, outputs: args.outputs, repoRoot: args.repo_root, runId: args.run_id }) }
+      }
+      if (command === 'run-status') {
+        const orch = await orchestrateDriverPromise
+        return { command, ...orch.runStatus({ repoRoot: args.repo_root, runId: args.run_id }) }
+      }
+      if (command === 'run-finalize') {
+        const orch = await orchestrateDriverPromise
+        return { command, ...orch.runFinalize({ repoRoot: args.repo_root, runId: args.run_id }) }
+      }
+      if (command === 'render') {
+        const orch = await orchestrateDriverPromise
+        if (!args.bundle_dir) return { command, ok: false, error: 'render requires bundle_dir' }
+        return { command, ...orch.renderExplanation(args.bundle_dir, { out: args.out }) }
       }
       if (command === 'validate') {
         if (!args.bundle_dir) return { command, ok: false, error: 'validate requires bundle_dir' }

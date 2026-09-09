@@ -25,7 +25,7 @@ const {
 // Plugin registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('plugin registers the compiler_explain tool and the always-on policy section', () => {
+test('plugin registers the compiler_explain tool and the always-on policy sections', () => {
   const sections = []
   const tools = []
   plugin.apply({ systemPrompt: { section: (s) => sections.push(s) }, tools: { register: (t) => tools.push(t) } })
@@ -33,10 +33,14 @@ test('plugin registers the compiler_explain tool and the always-on policy sectio
   assert.equal(tools[0].name, 'compiler_explain')
   assert.equal(tools[0].parameters.required[0], 'command')
   assert.deepEqual([...tools[0].parameters.properties.command.enum],
-    ['plan', 'validate', 'readiness', 'stale', 'compose-preflight', 'compose-plan', 'compose-validate', 'compose-render'])
-  assert.equal(sections.length, 1)
-  assert.equal(sections[0].name, 'code-explanation-policy')
+    ['plan', 'validate', 'readiness', 'stale', 'compose-preflight', 'compose-plan', 'compose-validate', 'compose-render', 'catalog', 'run-plan', 'run-status', 'run-finalize', 'render'])
+  assert.equal(sections.length, 2)
+  assert.deepEqual(sections.map((s) => s.name), ['code-explanation-policy', 'code-explanation-orchestration-policy'])
   assert.ok(sections[0].text.includes('presentation handoff'))
+  // Orchestration policy routes natural-language request shapes and the reuse lifecycle.
+  const orch = sections[1].text
+  assert.ok(orch.includes('run-plan') && orch.includes('run-finalize'))
+  assert.ok(orch.includes('REUSE') && orch.includes('REFRESH') && orch.includes('CREATE') && orch.includes('AMBIGUOUS'))
   assert.ok(typeof tools[0].execute === 'function')
 })
 

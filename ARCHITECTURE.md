@@ -1108,3 +1108,61 @@ Semantic zoom 是硬要求:系统故事只放横向连接(ordering/contract/repr
   `docs/goal.md`、`adapters/{README,deepseek-harness/README,deepseek-harness/conventions}.md`、
   `adapters/deepseek-harness/goal-templates/pass-analysis-goal.md`、`adapters/zcode/`、
   `repomap/pyproject.toml`、`repomap/src/mlir_repomap/{query,cli}.py`(pipeline_stages 落地核实)。
+
+## 20. Phase T4:Explanation Workflow Orchestration & Productionization(2026-09-09 已实现)
+
+目标:把 T1/T2/T3 的 primitives 升级成可恢复、可复用、可增量执行的 production workflow——用户只描述"想理解什么、哪些组件一起讲、要不要文档和 slides",不需要知道任何 bundle path、compose 命令或 artifact 内部细节。**不新增知识层**(Evidence → TeachingDossier → PresentationHandoff 与 composition 层不变、schema 保持 v1),新增结构全部属于 Execution / Control Plane(`compiler-orchestrate-driver.mjs`,挂载为 `compiler_explain` 的新命令族)。
+
+### 20.1 三层职责
+
+```text
+User Intent("梳理 A、B、C,各自成文,讲清关系,做 slides")
+   ↓  永远先 run-plan;用户只给 subject 名字与期望输出
+Explanation Orchestration Control Plane(compiler-orchestrate-driver.mjs)
+   ├─ Artifact Catalog    — 每次从 source-of-truth artifacts 推导,无持久索引、无数据库
+   ├─ Subject Resolver    — 确定性 key 匹配;多身份 → AMBIGUOUS 显式返回,禁止静默挑选
+   ├─ Lifecycle Planner   — REUSE / REFRESH / CREATE(深度兼容:presentation > deep > standard > overview)
+   │                        + composition 复用(组件集合恒等 + 递归 fresh)+ presentation 复用(handoff hash)
+   ├─ Execution DAG       — 显式依赖图:children → composition → docs/presentation
+   └─ Final Gate          — 逐项验证全部 requested deliverables 后才允许 COMPLETE
+          │
+          ▼
+Existing T1/T3 Knowledge Plane(subject/evidence/dossier/handoff/composition/readiness,语义半区不变)
+          │
+          ▼
+Existing T2 Presentation Plane(preflight-handoff 门 + presentation consumer,不变)
+```
+
+Agent 仍然独占全部语义工作(机制重构、mental model、bridges、storyline、semantic review);orchestration 只做 discover / resolve / reuse / refresh planning / 依赖排序 / artifact state / resume / 输出覆盖 / 最终验证,并且**绝不生成任何语义内容**。
+
+### 20.2 Runtime vs Curated artifact 生命周期
+
+| | Runtime store(正常使用) | Curated store(显式晋升) |
+|---|---|---|
+| 路径 | `analysis/runtime/{explanations,presentations,runs,documents}/<repository>/`(**gitignored**) | `analysis/explanations/`、`analysis/presentations/`(tracked) |
+| 用途 | normal user tasks、可恢复 run state、当前工作 artifacts | dogfood 证据、regression fixture、architecture 记录 |
+| 写入 | 每次正常解释任务自动写入 | 仅开发者显式 promote(git add/commit 由人执行,工具永不自动 commit runtime artifacts) |
+| 按 repository 区分 | 是(`<repository>/` 子目录;composition children 必须是同仓兄弟目录) | 不区分(历史 dogfood 平铺) |
+
+- `COMPILER_DEV_EXPLAIN_DIR` override 语义保持:它替换 runtime explanations root(兼容既有测试与脚本)。
+- **正常使用零污染**:catalog/run 状态/派生文档都落在 runtime store;reuse 一个 curated bundle 时,派生文档(`explanation.md`/`system-story.md`)渲染到 runtime store 的 `documents/<repository>/<bundle-id>/`,绝不写入 tracked 目录(硬验收项,有测试)。
+- Catalog 同时发现两种 origin(`artifact_origin: runtime | curated`),选择按 repository/freshness/readiness/depth/HEAD 判定,同条件才用稳定 precedence;selected/rejected/selection reason 全部记录。
+- 旧 HEAD bundle 不删除,分类为 STALE/HISTORICAL;GC 与自动晋升明确非目标。
+
+### 20.3 确定性半区(run-* 命令族,挂在 `compiler_explain` 下)
+
+- `catalog`:推导 artifact catalog(§6 字段:bundle_id/path、subject_id/type/name、repository/HEAD、depth、readiness(**重算**)、freshness(**重算**)、is_composition、child_subject_ids、handoff/doc/presentation 状态、artifact_origin)。unreadable artifact 保留可见并归 BLOCKED,不静默跳过。
+- `run-plan`:request → catalog → resolution → lifecycle → DAG。Subject 解析 key:subject_id、name、normalized name、condensed name(分隔符/大小写不敏感的**精确**相等,非模糊匹配)、type canonical id(如 pass 的 pass_arg)。0 匹配 → CREATE;≥2 个不同 subject 身份 → AMBIGUOUS(候选全量返回,由 agent 结合 repository evidence 决策)。深度兼容决定 REUSE vs REFRESH(request=presentation、existing=standard → REFRESH;反向 → REUSE)。Composition 复用要求 requested component set **集合恒等**(A+B+C≠A+B+C+D)、同 repository、递归 fresh、无 open conflict、深度覆盖;presentation 复用要求 deck manifest 记录的 handoff(+composition)hash 与当前 artifact 一致且 preflight CONSUMABLE。相同 request signature(repository + 归一化 subjects + depth + outputs)的 open run **resume 而非重建**(幂等)。
+- `run-status`:节点真值**从 artifacts 重新推导**(readiness+freshness+文档 currency+presentation hash),run.json 只存 coordination facts(§18 防漂移)。依赖满足的文档节点由 driver 直接渲染(与 compose-render 同性质:derived view,非语义生成)。输出 NEXT_ACTIONS 与 CREATE/REFRESH 的 compact child work packet(§21:subject/type/repository/HEAD/target bundle root/required depth/why/required outputs/existing artifact——不带 parent conversation)。独立 child 标记 `parallelizable`,由既有 Harness subagent 能力消费;driver 不做 agent spawning。
+- `run-finalize`:最终门(§35)。COMPLETE 当且仅当:全部 requested subjects READY+FRESH+深度覆盖;全部 requested documents 与 JSON 一致(current);composition 递归 fresh 且无 open conflict;presentation manifest hash 匹配且 preflight CONSUMABLE。任一缺失 → `blocked_at_child` / `blocked_at_composition` / `presentation_invalid`,并给出逐项原因。结果摘要(§36):subjects REUSED/REFRESHED/CREATED、composition、documents n/n、presentation、re-analysis avoided。
+- run state 不存 raw prompt / transcript / source bodies / credentials;metrics 只记 compact execution facts(reused/refreshed/created/ambiguous/blocked、composition/presentation reuse、documents)。
+
+### 20.4 单 subject 人读文档(derived renderer)
+
+`render` 命令从 bundle JSON 确定性渲染 `explanation.md`(§31–§33):JSON 是唯一事实源,renderer 不新增语义 claim;章节自适应(mental model / why / context / inputs-outputs-contracts / mechanism / canonical example / state transitions / decisions / strategies / constraints / boundaries / placement / ownership / takeaways / risks / storyline / type extension / evidence index——只渲染 dossier 实际存在的部分 + type extension)。文档 currency 由 run gate 以"重渲染字节比对"判定。
+
+### 20.5 测试与防过拟合
+
+- `scripts/test/orchestration.test.mjs`(25 tests):catalog(runtime+curated 发现、metadata、origin 区分、无持久索引、unreadable 可见)、resolver(exact id/name、normalized、canonical id、AMBIGUOUS、CREATE)、lifecycle(REUSE/REFRESH(HEAD drift、深度不足)/CREATE/BLOCKED)、composition 复用(集合变更强制重组)、DAG(single/multi/composition/presentation 依赖)、resume(partial → 只剩未完成节点)、idempotency(同请求两次无重复 bundle)、final gate(子未就绪/conflict/presentation hash 失配 → 拒绝 COMPLETE;全绿 → COMPLETE)、runtime store 清洁(正常 run 前后 harness `git status --porcelain` 不变 + 默认 runtime root gitignored)、renderer(derived/adaptive/确定性)、cross-origin(真实 curated 系统故事可复用)、anti-overfitting(generic orchestration 代码无 dogfood 专名)。
+- 全套 `node --test scripts/test/*.test.mjs`:263 tests,失败集合与实现前基线**完全一致**(8 个 Ripwire 环境失败,无新增 failure identity);`scripts/regression-cases.mjs` 无 drift。
+- 既有 low-level primitives(plan/validate/readiness/stale/compose-*)全部保留,orchestration 是其上的 control plane,不是替代。

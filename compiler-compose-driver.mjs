@@ -66,7 +66,9 @@ export function planComposition(args) {
 
   const slug = slugifyComposition(name)
   const bundleId = `${new Date().toISOString().slice(0, 10)}-${slug}-${subjectType}`
-  const bundleDir = join(explainRoot(), bundleId)
+  // root_dir (Phase T4): orchestration work packets target the runtime store;
+  // without it the curated default root is used (unchanged behavior).
+  const bundleDir = join(args.root_dir ? resolve(args.root_dir) : explainRoot(), bundleId)
   const compositionSkeleton = {
     artifact: ARTIFACT_COMPOSITION,
     schema_version: COMPOSITION_SCHEMA_VERSION,

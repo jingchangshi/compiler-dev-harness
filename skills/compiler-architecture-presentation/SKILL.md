@@ -68,6 +68,8 @@ Verdicts and their meanings:
 
 A system-story handoff (Phase T3 composition of multiple child bundles) is consumed exactly like any other Mode A handoff — there is no system-story mode and no special case: the storyline, visuals, canonical example, takeaways, and evidence index in the handoff are the deck's semantic input regardless of whether the subject is one class or a multi-pass pipeline. Recursion is invisible here: the preflight already refuses when any consumed child bundle (via composition imports) is stale.
 
+**Deck reuse (Phase T4).** The manifest is also the reuse key: an existing presentation project whose `presentation-manifest.json` records the CURRENT handoff hash (and composition hash, for system stories) of a READY+FRESH bundle is still valid — do not regenerate the same deck. The orchestration control plane (`compiler_explain run-status` / `run-finalize`) checks this deterministically before asking for presentation work; when it reports a deck `reused`, the correct action is no deck action. If the handoff hash changed, the deck is invalidated — rebuild it through Mode A from the refreshed handoff, never by patching the old deck in place.
+
 ### Mode B — TeachingDossier exists but no PresentationHandoff
 
 Do not invent the presentation story from the dossier yourself. Route back to the code-explanation workflow (`compiler_explain` / `skills/code-explanation/`) to produce the presentation-depth handoff, then return to Mode A:
