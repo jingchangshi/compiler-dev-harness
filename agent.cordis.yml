@@ -21,11 +21,15 @@
 
 # The preset's own persona, shadowing the deployment default for this agent.
 # `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+# DSH 0.1.5 renamed this row's config: the old single `text` field became
+# `prefix` (required) + `suffix` (commit 40792330c0), so the prefix keeps its
+# deployment position ahead of first-party guidance and the cwd line trails it.
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -233,6 +237,9 @@
       config:
         provider: spawn
         toolName: subagent
+        # 0.1.5 standard: delegation model-selection settings (fork stays
+        # without it so provider/model follow the parent for KV-cache reuse).
+        modelSelectionSettings: true
         backgroundMode: continuable
 
     - id: tool-subagent-fork
@@ -336,3 +343,9 @@
   config:
     fetch: false
     searchTimeoutMs: 60000
+
+# New in 0.1.5 (37d27fcdf9): the present tool backs immutable file deliveries —
+# agents declare outputs they created or updated so the user gets download
+# cards. The shipped `standard` carries it; added here for upgrade parity.
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
